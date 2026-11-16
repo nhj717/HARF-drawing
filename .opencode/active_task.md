@@ -12,9 +12,16 @@
 | ------------- | --------------------------------------------------------------------- |
 | `reference/`  | Original MATLAB sources (16 `*.m` scripts, `HARF_drawing.mlapp`,
 |               | `Logo.png`, `github-mark.png`). Read-only reference for the port.     |
-| `src/`        | Python core package (solvers, physics models). Ported modules land
-|               | here; currently a fresh skeleton (`src/__init__.py`).                   |
-| `tests/`      | Unit + invariant tests (`test_invariants.py`).                        |
+| `src/`        | Python core package: `models.py` (dataclasses, targets,
+|               | diagnostics), `expressions.py` (safe MATLAB/Python AST),
+|               | `materials.py` (clamped laws, `273.15` K, `viscosity_3` fix),
+|               | `physics.py` (4-state Jacket + 1-state/ring Capillary ODEs),
+|               | `solvers.py` (`brentq` + parallel scan + TRF optimizer),
+|               | `io_utils.py` (`.csv`/`.txt` export, `.json` config).          |
+| `app/`        | `PySide6` + `Matplotlib` 5-tab desktop GUI (`main.py`,
+|               | `main_window.py`, `workers.py`, `tabs/`, `widgets/`).         |
+| `tests/`      | Unit, invariant, safety, I/O & offscreen Qt GUI tests         |
+|               | (`test_{invariants,expressions,physics,optimization,safety,io,gui}.py`). |
 | `doc/`        | Documentation figures (`Fibre_HARF.png`).                             |
 | `.idea/`      | PyCharm project config (preserved).                                    |
 | `README.md`   | Project readme (preserved).                                             |
