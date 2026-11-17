@@ -22,7 +22,7 @@ from matplotlib.backends.backend_qtagg import (
 )
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from app.theme import (
     CURVE_CAPS,
@@ -89,11 +89,15 @@ class PlotCanvas(QWidget):
             f"color: {TEXT_MUTED}; font-family: monospace;"
         )
 
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.cursor_label.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Fixed
+        )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.toolbar)
-        layout.addWidget(self.canvas)
-        layout.addWidget(self.cursor_label)
+        layout.addWidget(self.toolbar, 0)
+        layout.addWidget(self.canvas, 1)
+        layout.addWidget(self.cursor_label, 0)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
         self.clear("No data yet — run a computation.")
 
@@ -245,14 +249,25 @@ class PlotCanvas(QWidget):
     def plot_furnace_profile(
         self, z_m: np.ndarray, profile: np.ndarray, t_max_c: float
     ) -> None:
-        """Furnace profile ``T/Tmax`` (and the hot/cold zone split)."""
+        """Furnace profile ``T/Tmax`` in metres on ``[0, Lfour]``.
+
+        Matches MATLAB ``UIAxes_3``: ``z (m)`` with ``xlim = (0, Lfour)``
+        and a 5% head-room on ``ylim`` so constant ``'1'`` profiles do
+        not touch the top spine.
+        """
         self.ax.clear()
         self.ax.plot(
-            z_m * 1e3, profile, label="T/Tmax", color=CURVE_JACKET["color"]
+            z_m, profile, label="T/Tmax", color=CURVE_JACKET["color"]
         )
-        self.ax.set_xlabel("z (mm)")
+        y = np.asarray(profile, dtype=float)
+        y_top = 1.05
+        if y.size and np.isfinite(y).any():
+            y_top = max(1.05, float(np.nanmax(y)) * 1.05)
+        self.ax.set_xlabel("z (m)")
         self.ax.set_ylabel("T / Tmax (normalized)")
         self.ax.set_title(f"Furnace profile (Tmax = {t_max_c:.1f} C)")
+        self.ax.set_xlim(0.0, float(np.max(z_m)))
+        self.ax.set_ylim(0.0, y_top)
         self.ax.legend(fontsize=8)
         self._apply_theme()
         self.figure.tight_layout()

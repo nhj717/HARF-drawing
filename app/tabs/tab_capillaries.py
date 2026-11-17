@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLineEdit,
     QSpinBox,
     QSplitter,
     QVBoxLayout,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.widgets.plot_canvas import PlotCanvas
+from app.widgets.scroll import wrap_scroll
 from app.widgets.validators import (
     RatioBadge,
     attach_formula_validation,
@@ -115,7 +117,7 @@ class CapillariesTab(QWidget):
         pv.addWidget(self.plotCanvas)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(left)
+        self.splitter.addWidget(wrap_scroll(left))
         self.splitter.addWidget(preview_box)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
@@ -140,9 +142,13 @@ class CapillariesTab(QWidget):
             spec.rc0 * 2e3, 0.0, 1e3,
             tooltip=f"Ring {number} bore diameter dc0 [{number}] [mm]",
         )
-        gamma_edit = make_double_edit(0.3)
+        # Plain QLineEdits for formulas (no QDoubleValidator, which
+        # would block letters/operators while typing material laws).
+        gamma_edit = QLineEdit()
+        gamma_edit.setToolTip(f"Ring {number} surface tension gamma(T) [N/m]")
         gamma_edit.setText(DEFAULT_GAMMA)
-        visc_edit = make_double_edit(1.0)
+        visc_edit = QLineEdit()
+        visc_edit.setToolTip(f"Ring {number} viscosity mu(T) [Pa s]")
         visc_edit.setText(DEFAULT_VISCOSITY)
         attach_formula_validation(gamma_edit, ("T",))
         attach_formula_validation(visc_edit, ("T",))

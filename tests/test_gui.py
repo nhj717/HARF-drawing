@@ -15,6 +15,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.main import main  # noqa: E402
@@ -706,3 +707,137 @@ def test_cross_section_geometry_shape(window: MainWindow, success_result):
         rc1 = float(success_result.Rc[0][idx])
         assert rc1 < r
         assert (r - rc1) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# A5: oven thermal profile regressions (units, validators, view gating,
+# layout stretch) — deep offscreen pixel & keystroke audit fixes.
+# ---------------------------------------------------------------------------
+
+
+def _oven_curve(ax):
+    """The rendered oven curve line (long, finite) of ``ax``."""
+    lines = [
+        line for line in ax.get_lines()
+        if len(line.get_xdata()) > 200
+        and np.isfinite(line.get_xdata()).all()
+        and np.isfinite(line.get_ydata()).all()
+    ]
+    assert lines, "no oven curve rendered on the axes"
+    return lines[0]
+
+
+def _assert_curve_in_bounds(ax) -> None:
+    """All points inside ``xlim`` (inclusive) and strictly inside ``ylim``."""
+    line = _oven_curve(ax)
+    x, y = line.get_xdata(), line.get_ydata()
+    x0, x1 = ax.get_xlim()
+    y0, y1 = ax.get_ylim()
+    assert x0 <= x.min() < x.max() <= x1, "xdata escapes xlim"
+    assert y0 < y.min() and y.max() < y1, "ydata not strictly inside ylim"
+    assert x.size > 200, f"only {x.size} visible in-bounds points"
+
+
+def test_tab1_oven_curve_units_and_bounds(window: MainWindow) -> None:
+    """Tab 1 renders all 400 points in metres on ``[0, Lfour]``."""
+    p = window.parameter_tab
+    ax = p.plotCanvas.ax
+    assert ax.get_xlabel() == "z (m)"
+    assert ax.get_xlim() == (0.0, pytest.approx(0.065))
+    line = _oven_curve(ax)
+    assert len(line.get_xdata()) == 400
+    assert float(np.max(line.get_xdata())) == pytest.approx(0.065)
+    _assert_curve_in_bounds(ax)
+
+
+def test_tab1_oven_curve_tracks_lfour_and_live_tmax(
+    window: MainWindow,
+) -> None:
+    """Curve follows ``Lfour`` edits and the live ``Tmax`` from Tab 4."""
+    p, d = window.parameter_tab, window.direct_tab
+    p.LfourEdit.setText("0.08")
+    assert p.plotCanvas.ax.get_xlim()[1] == pytest.approx(0.08)
+    _assert_curve_in_bounds(p.plotCanvas.ax)
+    assert float(
+        np.max(_oven_curve(p.plotCanvas.ax).get_xdata())
+    ) == pytest.approx(0.08)
+    d.TmaxEdit.setText("2000")
+    assert "2000.0" in p.plotCanvas.ax.get_title()
+    _assert_curve_in_bounds(p.plotCanvas.ax)
+
+
+def test_tabs45_pre_run_curve_bounds_and_view_gating(
+    window: MainWindow,
+) -> None:
+    """Tabs 4-5 render the pre-run furnace curve only for the view."""
+    d, o = window.direct_tab, window.optimization_tab
+    for tab in (d, o):
+        assert tab.viewCombo.currentText() == TEMPERATURE_VIEW
+        _assert_curve_in_bounds(tab.plotCanvas.ax)
+        # Un-run non-temperature views keep the empty-state prompt.
+        tab.viewCombo.setCurrentText("Velocity V (mm/min)")
+        assert not tab.plotCanvas.has_finite_data()
+        tab.viewCombo.setCurrentText(TEMPERATURE_VIEW)
+        _assert_curve_in_bounds(tab.plotCanvas.ax)
+
+
+def test_formula_typing_not_blocked_by_validators(
+    window: MainWindow,
+) -> None:
+    """Real keystrokes type letters/operators; constants plot flat."""
+    p = window.parameter_tab
+    edit = p.furnaceProfileEdit
+    assert edit.validator() is None  # no QDoubleValidator on formula box
+    edit.clear()
+    QTest.keyClicks(edit, "exp(-(z-0.03)^2/0.001)")
+    assert edit.text() == "exp(-(z-0.03)^2/0.001)"
+    p.refresh_furnace_profile()
+    assert len(_oven_curve(p.plotCanvas.ax).get_xdata()) == 400
+    _assert_curve_in_bounds(p.plotCanvas.ax)
+
+    edit.clear()
+    QTest.keyClicks(edit, "1")
+    assert edit.text() == "1"
+    p.refresh_furnace_profile()
+    line = _oven_curve(p.plotCanvas.ax)
+    y = np.asarray(line.get_ydata(), dtype=float)
+    assert y.size == 400 and np.isfinite(y).all()
+    assert np.allclose(y, 1.0)  # 0-d constant broadcast, no shape error
+    _assert_curve_in_bounds(p.plotCanvas.ax)
+
+    j = window.jacket_tab
+    assert j.viscosityEdit.validator() is None
+    j.viscosityEdit.clear()
+    QTest.keyClicks(j.viscosityEdit, "10^(-7.946)*exp(66337/T)")
+    assert j.viscosityEdit.text() == "10^(-7.946)*exp(66337/T)"
+    assert j.viscosityEdit.property("formula_valid") is True
+
+
+def test_invalid_furnace_profile_edit_is_caught(window: MainWindow) -> None:
+    """Invalid/constant edits never abort the cross-tab refresh."""
+    p = window.parameter_tab
+    p.furnaceProfileEdit.setText("bad((")
+    assert not p.plotCanvas.has_finite_data()
+    p.furnaceProfileEdit.setText("0.95")
+    assert p.plotCanvas.has_finite_data()
+    assert np.allclose(
+        _oven_curve(p.plotCanvas.ax).get_ydata(), 0.95
+    )
+
+
+def test_plot_canvas_fills_panel_and_window_fits_laptop(qapp) -> None:
+    """Matplotlib canvas >= 70% of the panel; window fits 1280x800."""
+    win = MainWindow()
+    win.resize(1280, 800)
+    win.show()
+    qapp.processEvents()
+    assert win.minimumSizeHint().height() <= 820
+    for tab in (
+        win.parameter_tab, win.direct_tab, win.optimization_tab,
+    ):
+        win.tabs.setCurrentWidget(tab)
+        qapp.processEvents()
+        pc = tab.plotCanvas
+        assert pc.height() > 0
+        assert pc.canvas.height() >= 0.7 * pc.height()
+    win.close()

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLineEdit,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -25,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.widgets.plot_canvas import PlotCanvas
+from app.widgets.scroll import wrap_scroll
 from app.widgets.validators import (
     RatioBadge,
     attach_formula_validation,
@@ -77,24 +79,26 @@ class JacketTab(QWidget):
         form.addRow("Bore diameter d0 [mm]", self.d0Edit)
         form.addRow(self.dRatioBadge)
 
-        self.rhoEdit = make_double_edit(
-            2200.0, tooltip="Jacket density rho(T) [kg m-3]"
-        )
+        # Formula boxes are plain QLineEdits: a QDoubleValidator would
+        # swallow letters and operators while typing laws like
+        # ``10^(-7.946)*exp(66337/T)``.
+        self.rhoEdit = QLineEdit()
+        self.rhoEdit.setToolTip("Jacket density rho(T) [kg m-3]")
         self.rhoEdit.setText(DEFAULT_RHO)
-        self.gammaEdit = make_double_edit(
-            0.3, tooltip="Surface tension gamma(T) [N m-1]"
-        )
+        self.gammaEdit = QLineEdit()
+        self.gammaEdit.setToolTip("Surface tension gamma(T) [N m-1]")
         self.gammaEdit.setText(DEFAULT_GAMMA)
-        self.cpEdit = make_double_edit(
-            1000.0, tooltip="Heat capacity Cp(T) [J kg-1 K-1]"
-        )
+        self.cpEdit = QLineEdit()
+        self.cpEdit.setToolTip("Heat capacity Cp(T) [J kg-1 K-1]")
         self.cpEdit.setText(DEFAULT_CP)
-        self.viscosityEdit = make_double_edit(
-            1.0, tooltip="Dynamic viscosity mu(T) [Pa s] (positive)"
+        self.viscosityEdit = QLineEdit()
+        self.viscosityEdit.setToolTip(
+            "Dynamic viscosity mu(T) [Pa s] (positive)"
         )
         self.viscosityEdit.setText(DEFAULT_VISCOSITY)
-        self.alphaEdit = make_double_edit(
-            0.885, tooltip="Total hemispherical absorptivity alpha(T)"
+        self.alphaEdit = QLineEdit()
+        self.alphaEdit.setToolTip(
+            "Total hemispherical absorptivity alpha(T)"
         )
         self.alphaEdit.setText(DEFAULT_ALPHA)
 
@@ -130,7 +134,7 @@ class JacketTab(QWidget):
         left_layout.addStretch(1)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(left)
+        self.splitter.addWidget(wrap_scroll(left))
         self.splitter.addWidget(preview_box)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)

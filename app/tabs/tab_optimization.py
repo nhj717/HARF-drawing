@@ -38,6 +38,7 @@ from app.widgets.plot_canvas import (
     TEMPERATURE_VIEW,
     PlotCanvas,
 )
+from app.widgets.scroll import wrap_scroll
 from app.widgets.validators import RatioBadge, make_double_edit, read_double
 from app.workers import OptimizationWorker
 from src.io_utils import export_results_table
@@ -273,7 +274,7 @@ class OptimizationTab(QWidget):
         right_layout.addWidget(self.view_stack, stretch=1)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(left)
+        self.splitter.addWidget(wrap_scroll(left))
         self.splitter.addWidget(right)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
@@ -381,6 +382,9 @@ class OptimizationTab(QWidget):
         if self._result is not None or self.view_stack.currentIndex() == 1:
             return
         self._last_inputs = inputs
+        if self.viewCombo.currentText() != TEMPERATURE_VIEW:
+            # Un-run views keep their empty-state prompt.
+            return
         self.plotCanvas.plot_initial_furnace_temperature(
             inputs.L,
             inputs.Lfour,

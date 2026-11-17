@@ -166,7 +166,9 @@ class MainWindow(QMainWindow):
             self.optimization_tab.update_preview()
             return
         self.optimization_tab.set_nb_nested(inputs.nb_nested)
-        self.parameter_tab.refresh_furnace_profile(inputs)
+        self.parameter_tab.refresh_furnace_profile(
+            inputs, tmax_c=inputs.Tmax_C
+        )
         self.jacket_tab.refresh_material_comparison(
             self.capillaries_tab.material_exprs()
         )

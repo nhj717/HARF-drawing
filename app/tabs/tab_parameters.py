@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLineEdit,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.widgets.plot_canvas import PlotCanvas
+from app.widgets.scroll import wrap_scroll
 from app.widgets.validators import (
     attach_formula_validation,
     make_double_edit,
@@ -33,6 +35,7 @@ from src.expressions import CompiledExpression, ExpressionError
 from src.models import (
     DEFAULT_FURNACE_PROFILE,
     DEFAULT_TEXT_C,
+    DEFAULT_TMAX_C,
     SimulationInputs,
     grams_to_newtons,
     mm_per_min_to_m_per_s,
@@ -87,8 +90,11 @@ class ParameterTab(QWidget):
         form.addRow("Drawing-zone length L [m]", self.lengthEdit)
 
         furnace_box = QGroupBox("Furnace")
-        self.furnaceProfileEdit = make_double_edit(
-            1.0, tooltip="Furnace profile(z) in [0, 1], expression of z [m]"
+        # Plain QLineEdit: formula boxes must NOT carry a QDoubleValidator,
+        # which would swallow letters and operators like 'e', 'x', '(', '^'.
+        self.furnaceProfileEdit = QLineEdit()
+        self.furnaceProfileEdit.setToolTip(
+            "Furnace profile(z) in [0, 1], expression of z [m]"
         )
         self.furnaceProfileEdit.setText(DEFAULT_FURNACE_PROFILE)
         fform = QFormLayout(furnace_box)
@@ -131,7 +137,7 @@ class ParameterTab(QWidget):
         pv.addWidget(self.plotCanvas)
 
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(left)
+        self.splitter.addWidget(wrap_scroll(left))
         self.splitter.addWidget(preview_box)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
@@ -153,7 +159,9 @@ class ParameterTab(QWidget):
 
     # -- live furnace profile (UIAxes_3) ----------------------------------
     def refresh_furnace_profile(
-        self, inputs: SimulationInputs | None = None
+        self,
+        inputs: SimulationInputs | None = None,
+        tmax_c: float | None = None,
     ) -> None:
         """Render the normalized furnace profile ``T/Tmax`` on ``[0, Lfour]``."""
         if inputs is not None:
@@ -163,21 +171,21 @@ class ParameterTab(QWidget):
         lf = max(float(lf), 1e-6)
         try:
             expr = CompiledExpression(self.furnaceProfileEdit.text(), ("z",))
-        except ExpressionError:
+            z_grid = np.linspace(0.0, lf, 400)
+            values = np.asarray(expr.vector(z_grid), dtype=float)
+            # Constant laws (e.g. "1" or "0.95") evaluate to a 0-d output.
+            values = np.broadcast_to(values, z_grid.shape).copy()
+        except (ExpressionError, ValueError, ArithmeticError):
             self.plotCanvas.clear("Invalid furnace profile formula.")
             return
-        z_grid = np.linspace(0.0, lf, 400)
-        values = np.clip(expr.vector(z_grid), 0.0, 1.0)
+        values = np.clip(values, 0.0, 1.0)
         if not np.isfinite(values).any():
             self.plotCanvas.clear(
                 "Furnace profile yields no finite values on [0, Lfour]."
             )
             return
-        self.plotCanvas.plot_furnace_profile(z_grid, values, 1806.9)
-        self.plotCanvas.ax.set_xlabel("z (m)")
-        self.plotCanvas.ax.set_xlim(0.0, lf)
-        self.plotCanvas.figure.tight_layout()
-        self.plotCanvas.canvas.draw_idle()
+        tmax = DEFAULT_TMAX_C if tmax_c is None else float(tmax_c)
+        self.plotCanvas.plot_furnace_profile(z_grid, values, tmax)
 
     # -- data exchange -----------------------------------------------------
     def to_fields(self) -> dict:
