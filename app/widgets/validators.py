@@ -14,6 +14,7 @@ import math
 from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtWidgets import QLabel, QLineEdit
 
+from app.theme import GREEN, RED, TEXT_MUTED
 from src.expressions import CompiledExpression, ExpressionError
 
 __all__ = [
@@ -28,12 +29,24 @@ __all__ = [
     "read_int",
 ]
 
-GOOD_COLOR = "#2e7d32"  # green
-BAD_COLOR = "#c62828"  # red
-NEUTRAL_COLOR = "#546e7a"
+GOOD_COLOR = GREEN  # neon green #00e676
+BAD_COLOR = RED  # neon red #ff5252
+NEUTRAL_COLOR = TEXT_MUTED
 
-_GOOD_SS = f"color: {GOOD_COLOR}; font-weight: bold;"
-_BAD_SS = f"color: {BAD_COLOR}; font-weight: bold;"
+_GOOD_SS = (
+    f"color: {GOOD_COLOR}; background: rgba(0, 230, 118, 0.10); "
+    f"border: 1px solid {GOOD_COLOR}; border-radius: 3px; "
+    "padding: 1px 8px; font-weight: bold;"
+)
+_BAD_SS = (
+    f"color: {BAD_COLOR}; background: rgba(255, 82, 82, 0.10); "
+    f"border: 1px solid {BAD_COLOR}; border-radius: 3px; "
+    "padding: 1px 8px; font-weight: bold;"
+)
+_NEUTRAL_SS = (
+    f"color: {NEUTRAL_COLOR}; border: 1px solid #3a494a; "
+    "border-radius: 3px; padding: 1px 8px;"
+)
 
 
 class RatioBadge(QLabel):
@@ -45,7 +58,7 @@ class RatioBadge(QLabel):
         self.ratio: float | None = None
         self.is_ok: bool | None = None
         self.setToolTip(tooltip or label)
-        self.setStyleSheet(f"color: {NEUTRAL_COLOR};")
+        self.setStyleSheet(_NEUTRAL_SS)
 
     def set_ratio(self, numerator: float, denominator: float) -> float | None:
         """Update the badge from the current values; returns the ratio."""
@@ -140,7 +153,11 @@ def attach_formula_validation(
             message = f"Invalid formula: {exc}"
         edit.setProperty("formula_valid", ok)
         edit.setStyleSheet(
-            "background: #e8f5e9;" if ok else "background: #ffebee;"
+            "background: rgba(0, 230, 118, 0.14); "
+            "border: 1px solid #00e676; color: #dfe2f1;"
+            if ok else
+            "background: rgba(255, 82, 82, 0.14); "
+            "border: 1px solid #ff5252; color: #dfe2f1;"
         )
         edit.setToolTip(message)
 

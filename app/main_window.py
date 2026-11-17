@@ -26,6 +26,7 @@ from app.tabs.tab_direct import DirectTab
 from app.tabs.tab_jacket import JacketTab
 from app.tabs.tab_optimization import OptimizationTab
 from app.tabs.tab_parameters import ParameterTab
+from app.theme import build_cyberpunk_qss
 from app.workers import OptimizationWorker, SimulationWorker
 from src.io_utils import load_config_json, save_config_json
 from src.models import (
@@ -37,7 +38,7 @@ from src.models import (
 
 __all__ = ["MainWindow"]
 
-_GITHUB_URL = "https://github.com/"  # replaced if a repo URL exists
+_GITHUB_URL = "https://github.com/nhj717/HARF-drawing"
 _LOGO_PATH = Path("reference/Logo.png")
 _GITHUB_ICON_PATH = Path("reference/github-mark.png")
 
@@ -49,6 +50,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("HARF Drawing Simulation Workstation")
         self.resize(1280, 800)
+        self.setStyleSheet(build_cyberpunk_qss())
         self.config_path = Path(config_path) if config_path else None
 
         self.parameter_tab = ParameterTab()
@@ -143,6 +145,7 @@ class MainWindow(QMainWindow):
         self.capillaries_tab.inputs_changed.connect(
             self._refresh_cross_tab_state
         )
+        self.direct_tab.inputs_changed.connect(self._refresh_cross_tab_state)
         self.direct_tab.run_requested.connect(self.run_direct)
         self.direct_tab.result_ready.connect(self._on_direct_result)
         self.optimization_tab.run_requested.connect(self.run_optimization)
@@ -152,11 +155,27 @@ class MainWindow(QMainWindow):
 
     # -- cross-tab state --------------------------------------------------------
     def _refresh_cross_tab_state(self) -> None:
+        """Propagate every tab edit into all live plots and badges."""
         r0, _ = self.jacket_tab.geometry()
         self.capillaries_tab.update_contact_badge(
             r0, int(self.capillaries_tab.ncapSpinBox.value())
         )
-        self.optimization_tab.update_preview()
+        try:
+            inputs = self.build_inputs()
+        except (TypeError, ValueError):  # invalid intermediate state
+            self.optimization_tab.update_preview()
+            return
+        self.optimization_tab.set_nb_nested(inputs.nb_nested)
+        self.parameter_tab.refresh_furnace_profile(inputs)
+        self.jacket_tab.refresh_material_comparison(
+            self.capillaries_tab.material_exprs()
+        )
+        self.capillaries_tab.refresh_material_plot(
+            self.jacket_tab.material_exprs()
+        )
+        self.direct_tab.refresh_pre_run_profile(inputs)
+        self.optimization_tab.refresh_pre_run_profile(inputs)
+        self.optimization_tab.update_preview(inputs)
 
     # -- input assembly -----------------------------------------------------------
     def build_inputs(self) -> SimulationInputs:

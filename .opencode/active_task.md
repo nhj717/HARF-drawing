@@ -18,8 +18,8 @@
 |               | `physics.py` (4-state Jacket + 1-state/ring Capillary ODEs),
 |               | `solvers.py` (`brentq` + parallel scan + TRF optimizer),
 |               | `io_utils.py` (`.csv`/`.txt` export, `.json` config).          |
-| `app/`        | `PySide6` + `Matplotlib` 5-tab desktop GUI (`main.py`,
-|               | `main_window.py`, `workers.py`, `tabs/`, `widgets/`).         |
+| `app/`        | Cyberpunk neon `PySide6` + `Matplotlib` 5-tab GUI (`theme.py`,
+|               | `main.py`, `main_window.py`, `workers.py`, `tabs/`, `widgets/`). |
 | `tests/`      | Unit, invariant, safety, I/O & offscreen Qt GUI tests         |
 |               | (`test_{invariants,expressions,physics,optimization,safety,io,gui}.py`). |
 | `doc/`        | Documentation figures (`Fibre_HARF.png`).                             |

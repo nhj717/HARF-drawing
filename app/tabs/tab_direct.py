@@ -25,8 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.theme import RED, SURFACE_LOWEST, make_kpi_card
 from app.widgets.cross_section_canvas import CrossSectionCanvas
-from app.widgets.plot_canvas import AXIAL_VIEWS, SCHEMATIC_VIEW, PlotCanvas
+from app.widgets.plot_canvas import (
+    AXIAL_VIEWS,
+    SCHEMATIC_VIEW,
+    TEMPERATURE_VIEW,
+    PlotCanvas,
+)
 from app.widgets.validators import (
     RatioBadge,
     make_double_edit,
@@ -51,11 +57,13 @@ class DirectTab(QWidget):
 
     run_requested = Signal()
     result_ready = Signal(object)  # SimulationResult
+    inputs_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._result: SimulationResult | None = None
         self._worker: SimulationWorker | None = None
+        self._last_inputs: SimulationInputs | None = None
 
         self.TmaxEdit = make_double_edit(
             DEFAULT_TMAX_C, 0.0, 5000.0,
@@ -81,8 +89,10 @@ class DirectTab(QWidget):
             form.addRow(f"Capillary Pcap{i + 1} [mbar]", edit)
 
         self.runButton = QPushButton("Run computation")
+        self.runButton.setObjectName("btn_primary")
         self.runButton.clicked.connect(self._on_run)
         self.cancelButton = QPushButton("Cancel")
+        self.cancelButton.setObjectName("btn_danger")
         self.cancelButton.setEnabled(False)
         self.cancelButton.clicked.connect(self._on_cancel)
         self.progress_bar = QProgressBar()
@@ -91,8 +101,8 @@ class DirectTab(QWidget):
         self.diag_banner = QLabel("")
         self.diag_banner.setWordWrap(True)
         self.diag_banner.setStyleSheet(
-            "background: #fff3e0; border: 1px solid #ef6c00; "
-            "padding: 6px; color: #bf360c;"
+            f"background: {SURFACE_LOWEST}; border: 1px solid {RED}; "
+            f"padding: 6px; color: {RED};"
         )
         self.diag_banner.hide()
 
@@ -118,6 +128,7 @@ class DirectTab(QWidget):
 
         self.viewCombo = QComboBox()
         self.viewCombo.addItems(AXIAL_VIEWS)
+        self.viewCombo.setCurrentText(TEMPERATURE_VIEW)
         self.viewCombo.currentTextChanged.connect(self._on_view_changed)
         self.plotCanvas = PlotCanvas()
         self.crossSection = CrossSectionCanvas()
@@ -126,9 +137,14 @@ class DirectTab(QWidget):
         self.view_stack.addWidget(self.crossSection)  # index 1
 
         self.saveCsvButton = QPushButton("Save results (.csv)")
+        self.saveCsvButton.setObjectName("btn_export")
         self.saveCsvButton.clicked.connect(lambda: self._export("csv"))
         self.saveTxtButton = QPushButton("Save results (.txt)")
+        self.saveTxtButton.setObjectName("btn_export")
         self.saveTxtButton.clicked.connect(lambda: self._export("txt"))
+
+        # Post-run final-fiber KPI readouts (MATLAB output panel).
+        self.finalOutputBox = self._build_final_output_panel()
 
         layout = QVBoxLayout(self)
         layout.addWidget(process_box)
@@ -137,6 +153,7 @@ class DirectTab(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.diag_banner)
         layout.addLayout(badge_row)
+        layout.addWidget(self.finalOutputBox)
         plot_row = QHBoxLayout()
         plot_row.addWidget(QLabel("View:"))
         plot_row.addWidget(self.viewCombo)
@@ -145,7 +162,48 @@ class DirectTab(QWidget):
         plot_row.addWidget(self.saveTxtButton)
         layout.addLayout(plot_row)
         layout.addWidget(self.view_stack, stretch=1)
+        for edit in (self.TmaxEdit, self.PcoreEdit, *self.pcapEdits):
+            edit.textChanged.connect(self.inputs_changed)
         self._on_view_changed(self.viewCombo.currentText())
+
+    def _build_final_output_panel(self) -> QGroupBox:
+        """Neon KPI cards + badges for the final fiber geometry."""
+        box = QGroupBox("Final fiber outputs")
+        self.kpiVf = make_kpi_card("Vf", unit="mm/min")
+        self.kpiDf = make_kpi_card("Df", unit="um")
+        self.kpiDfBore = make_kpi_card("df", unit="um")
+        self.kpiDcore = make_kpi_card("Dcore", unit="um")
+        self.kpiDcf = make_kpi_card("Dcf1", unit="um")
+        self.kpiDcfBore = make_kpi_card("dcf1", unit="um")
+        self.kpiTf = make_kpi_card("tf1", unit="um")
+        self.finalContactBadge = RatioBadge(
+            "Rcf1 / Rcontact",
+            "Final ring-1 outer radius over the packing contact radius "
+            "(red when the capillaries overlap).",
+        )
+        self.ringRatioBadges = [
+            RatioBadge(
+                f"dcf{i + 1} / Dcf{i + 1}",
+                f"Final ring-{i + 1} bore/outer diameter ratio.",
+            )
+            for i in range(3)
+        ]
+        cards = QHBoxLayout()
+        for card in (
+            self.kpiVf, self.kpiDf, self.kpiDfBore, self.kpiDcore,
+            self.kpiDcf, self.kpiDcfBore, self.kpiTf,
+        ):
+            cards.addWidget(card)
+        badges = QHBoxLayout()
+        badges.addWidget(self.finalContactBadge)
+        for badge in self.ringRatioBadges:
+            badges.addWidget(badge)
+        badges.addStretch(1)
+        inner = QVBoxLayout(box)
+        inner.addLayout(cards)
+        inner.addLayout(badges)
+        box.hide()
+        return box
 
     # -- run / cancel --------------------------------------------------------
     def _on_run(self) -> None:
@@ -194,9 +252,10 @@ class DirectTab(QWidget):
         return self._result
 
     def set_result(self, result: SimulationResult | None) -> None:
-        """Install a result: banner, badges, plots, and cross-section."""
+        """Install a result: banner, badges, KPI panel, plots, cross-section."""
         self._result = result
         self._update_post_run_badges(result)
+        self._render_final_outputs(result)
         if result is not None and not result.ok:
             diag = result.diagnostics
             z_stop_mm = (diag.z_stop if diag else 0.0) * 1e3
@@ -242,14 +301,87 @@ class DirectTab(QWidget):
                     continue
             badge.set_ratio(float("nan"), 1.0)
 
+    # -- final-fiber KPI readouts --------------------------------------------
+    def _render_final_outputs(self, result: SimulationResult | None) -> None:
+        """Fill (or clear) the post-run KPI cards and ratio badges."""
+        cards = (
+            self.kpiVf, self.kpiDf, self.kpiDfBore, self.kpiDcore,
+            self.kpiDcf, self.kpiDcfBore, self.kpiTf,
+        )
+        if (
+            result is None or not result.ok
+            or len(result.z) == 0 or len(result.w) == 0
+        ):
+            self.finalOutputBox.hide()
+            for card in cards:
+                card.set_data("--", "")
+            self.finalContactBadge.set_ratio(float("nan"), 1.0)
+            for badge in self.ringRatioBadges:
+                badge.set_ratio(float("nan"), 1.0)
+            return
+        self.finalOutputBox.show()
+        self.kpiVf.set_data(f"{result.w[-1] * 60.0 * 1e3:.4g}", "mm/min")
+        self.kpiDf.set_data(f"{2.0 * result.R[-1] * 1e6:.4g}", "um")
+        self.kpiDfBore.set_data(f"{2.0 * result.r[-1] * 1e6:.4g}", "um")
+        self.kpiDcore.set_data(f"{result.D_core[-1] * 1e6:.4g}", "um")
+        if result.Rc and len(result.Rc[0]):
+            self.kpiDcf.set_data(
+                f"{2.0 * result.Rc[0][-1] * 1e6:.4g}", "um"
+            )
+        if result.rc and len(result.rc[0]):
+            self.kpiDcfBore.set_data(
+                f"{2.0 * result.rc[0][-1] * 1e6:.4g}", "um"
+            )
+        if (
+            result.Rc and result.rc
+            and len(result.Rc[0]) and len(result.rc[0])
+        ):
+            self.kpiTf.set_data(
+                f"{(result.Rc[0][-1] - result.rc[0][-1]) * 1e6:.4g}", "um"
+            )
+        if result.Rc and len(result.Rc[0]) and len(result.R_contact):
+            self.finalContactBadge.set_ratio(
+                float(result.Rc[0][-1]), float(result.R_contact[-1])
+            )
+        for i, badge in enumerate(self.ringRatioBadges):
+            if (
+                i < len(result.Rc) and i < len(result.rc)
+                and len(result.Rc[i]) and len(result.rc[i])
+            ):
+                badge.set_ratio(
+                    2.0 * float(result.rc[i][-1]),
+                    2.0 * float(result.Rc[i][-1]),
+                )
+            else:
+                badge.set_ratio(float("nan"), 1.0)
+
     # -- views -------------------------------------------------------------------
     def _on_view_changed(self, view: str) -> None:
         if view == SCHEMATIC_VIEW:
             self.view_stack.setCurrentIndex(1)
             self.crossSection.set_result(self._result)
-        else:
+        elif self._result is not None:
             self.view_stack.setCurrentIndex(0)
             self.plotCanvas.draw_axial_view(self._result, view)
+        elif self._last_inputs is not None and view.startswith("Temperature"):
+            self.view_stack.setCurrentIndex(0)
+            self.refresh_pre_run_profile(self._last_inputs)
+        else:
+            self.view_stack.setCurrentIndex(0)
+            self.plotCanvas.clear("No data yet — run a computation.")
+
+    def refresh_pre_run_profile(self, inputs: SimulationInputs) -> None:
+        """Live pre-run axial furnace profile (no result installed)."""
+        if self._result is not None or self.view_stack.currentIndex() == 1:
+            return
+        self._last_inputs = inputs
+        self.plotCanvas.plot_initial_furnace_temperature(
+            inputs.L,
+            inputs.Lfour,
+            inputs.Tmax_C,
+            inputs.Text_C,
+            inputs.furnace_profile_expr,
+        )
 
     # -- export --------------------------------------------------------------------
     def _export(self, fmt: str) -> None:

@@ -1,20 +1,25 @@
 """Tab 2: jacket geometry and user-editable material laws.
 
-Includes a live material-property preview (viscosity on a log axis,
-surface tension, density, heat capacity) and the furnace profile
-``T/Tmax`` vs ``z``, both rendered with :class:`PlotCanvas`.
+Right-side live material-property preview (``UIAxes_4``): a
+``propertyCombo`` selects one of ``Volumic mass``, ``Surface tension``,
+``Specific heat``, ``Viscosity`` or ``Emissivity`` and the ``PlotCanvas``
+renders it over ``T in [250, 2500] K`` (250 K ticks).  ``Viscosity`` and
+``Surface tension`` overlay every enabled capillary ring (``Cap #1..3``,
+neon pink/green/amber dashed) on the cyan Jacket curve, auto-refreshing
+live on any Jacket/Capillary formula edit or ``NestedCapillaries``
+change.
 """
 
 from __future__ import annotations
 
-import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QPushButton,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -26,11 +31,9 @@ from app.widgets.validators import (
     make_double_edit,
     read_double,
 )
-from src.expressions import CompiledExpression, ExpressionError
 from src.models import (
     DEFAULT_ALPHA,
     DEFAULT_CP,
-    DEFAULT_FURNACE_PROFILE,
     DEFAULT_GAMMA,
     DEFAULT_RHO,
     DEFAULT_VISCOSITY,
@@ -41,11 +44,11 @@ from src.models import (
 __all__ = ["JacketTab"]
 
 _PROPERTY_ITEMS = (
-    "Viscosity (log)",
+    "Volumic mass",
     "Surface tension",
-    "Density",
-    "Heat capacity",
-    "Absorptivity",
+    "Specific heat",
+    "Viscosity",
+    "Emissivity",
 )
 
 
@@ -57,6 +60,7 @@ class JacketTab(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._cap_materials: tuple[tuple[str, str], ...] = ()
         self.D0Edit = make_double_edit(
             8.3556, 0.0, 1e3, tooltip="Jacket outer diameter D0 [mm]"
         )
@@ -73,10 +77,6 @@ class JacketTab(QWidget):
         form.addRow("Bore diameter d0 [mm]", self.d0Edit)
         form.addRow(self.dRatioBadge)
 
-        self.furnaceProfileEdit = make_double_edit(
-            1.0, tooltip="Furnace profile(z) in [0, 1], expression of z [m]"
-        )
-        self.furnaceProfileEdit.setText(DEFAULT_FURNACE_PROFILE)
         self.rhoEdit = make_double_edit(
             2200.0, tooltip="Jacket density rho(T) [kg m-3]"
         )
@@ -105,40 +105,52 @@ class JacketTab(QWidget):
         form.addRow("Density rho(T) [kg/m^3]", self.rhoEdit)
         form.addRow("Heat capacity Cp(T) [J/(kg K)]", self.cpEdit)
         form.addRow("Absorptivity alpha(T)", self.alphaEdit)
-        form.addRow("Furnace profile(z) [0,1]", self.furnaceProfileEdit)
 
-        preview_box = QGroupBox("Live previews")
+        preview_box = QGroupBox("Material property (UIAxes_4)")
         self.propertyCombo = QComboBox()
         self.propertyCombo.addItems(_PROPERTY_ITEMS)
+        self.propertyCombo.currentTextChanged.connect(self._auto_refresh)
         self.refreshButton = QPushButton("Refresh preview")
-        self.refreshButton.clicked.connect(self.refresh_preview)
+        self.refreshButton.setObjectName("btn_accent")
+        self.refreshButton.clicked.connect(self._auto_refresh)
         self.plotCanvas = PlotCanvas()
 
         row = QHBoxLayout()
         row.addWidget(self.propertyCombo)
         row.addWidget(self.refreshButton)
+        row.addStretch(1)
         inner = QVBoxLayout(preview_box)
         inner.addLayout(row)
         inner.addWidget(self.plotCanvas)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(geom_box)
-        layout.addWidget(material_box)
-        layout.addWidget(preview_box, stretch=1)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.addWidget(geom_box)
+        left_layout.addWidget(material_box)
+        left_layout.addStretch(1)
+
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.addWidget(left)
+        self.splitter.addWidget(preview_box)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([420, 640])
+
+        layout = QHBoxLayout(self)
+        layout.addWidget(self.splitter)
 
         for edit in (self.D0Edit, self.d0Edit):
             edit.textChanged.connect(self._update_geometry_badge)
             edit.textChanged.connect(self.geometry_changed)
         for edit in (
-            self.furnaceProfileEdit, self.rhoEdit, self.gammaEdit,
+            self.rhoEdit, self.gammaEdit,
             self.cpEdit, self.viscosityEdit, self.alphaEdit,
         ):
-            variables = ("z",) if edit is self.furnaceProfileEdit else ("T",)
-            attach_formula_validation(edit, variables)
+            attach_formula_validation(edit, ("T",))
             edit.textChanged.connect(self.expressions_changed)
 
         self._update_geometry_badge()
-        self.refresh_preview()
+        self.refresh_material_comparison()
 
     # -- helpers -------------------------------------------------------------
     def _update_geometry_badge(self) -> None:
@@ -146,53 +158,47 @@ class JacketTab(QWidget):
         D0 = read_double(self.D0Edit, 8.3556)
         self.dRatioBadge.set_ratio(d0, D0)
 
-    # -- previews ------------------------------------------------------------
-    def refresh_preview(self) -> None:
-        """Plot the selected material property vs T (or furnace profile)."""
-        name = self.propertyCombo.currentText()
-        if name == "Viscosity (log)":
-            self._plot_single(self.viscosityEdit, "mu (Pa s)", log_y=True)
-        elif name == "Surface tension":
-            self._plot_single(self.gammaEdit, "gamma (N/m)")
-        elif name == "Density":
-            self._plot_single(self.rhoEdit, "rho (kg/m^3)")
-        elif name == "Heat capacity":
-            self._plot_single(self.cpEdit, "Cp (J/(kg K))")
-        elif name == "Absorptivity":
-            self._plot_single(self.alphaEdit, "alpha")
-        else:  # pragma: no cover - combo is exhaustive
-            pass
+    def _edit_for(self, prop: str):
+        return {
+            "Viscosity": self.viscosityEdit,
+            "Surface tension": self.gammaEdit,
+            "Volumic mass": self.rhoEdit,
+            "Specific heat": self.cpEdit,
+            "Emissivity": self.alphaEdit,
+        }[prop]
 
-    def _plot_single(self, edit, ylabel: str, log_y: bool = False) -> None:
-        t_grid = np.linspace(800.0, 2500.0, 400)
-        try:
-            expr = CompiledExpression(edit.text(), ("T",))
-            values = expr.vector(t_grid)
-        except ExpressionError:
-            self.plotCanvas.clear("Invalid formula — cannot preview.")
-            return
-        good = np.isfinite(values)
-        if not good.any():
-            self.plotCanvas.clear(
-                "Formula yields no finite values on T in [800, 2500] K."
-            )
-            return
-        self.plotCanvas.plot_property(
-            t_grid[good], [(values[good], "value")], ylabel,
-            log_y=log_y, title=self.propertyCombo.currentText(),
+    def material_exprs(self) -> tuple[str, str]:
+        """``(gamma_expr, viscosity_expr)`` for the capillaries preview."""
+        return (
+            self.gammaEdit.text().strip(),
+            self.viscosityEdit.text().strip(),
         )
 
-    def plot_furnace_profile(self, inputs: SimulationInputs) -> None:
-        """Render the current furnace profile T/Tmax vs z."""
-        try:
-            expr = CompiledExpression(self.furnaceProfileEdit.text(), ("z",))
-        except ExpressionError:
-            self.plotCanvas.clear("Invalid furnace profile formula.")
-            return
-        z_grid = np.linspace(0.0, inputs.L, 400)
-        values = np.clip(expr.vector(z_grid), 0.0, 1.0)
-        self.plotCanvas.plot_furnace_profile(
-            z_grid, values, inputs.Tmax_C
+    # -- live multi-curve preview (UIAxes_4) -----------------------------------
+    def _auto_refresh(self, *_args) -> None:
+        self.refresh_material_comparison()
+
+    def refresh_material_comparison(
+        self,
+        cap_materials: tuple[tuple[str, str], ...] | None = None,
+    ) -> None:
+        """Plot the selected property over ``[250, 2500] K``.
+
+        ``cap_materials`` is ``((gamma_i, visc_i), ...)`` for every
+        enabled nested ring; ``Viscosity`` and ``Surface tension``
+        overlay them on the Jacket curve.
+        """
+        if cap_materials is not None:
+            self._cap_materials = tuple(cap_materials)
+        prop = self.propertyCombo.currentText()
+        edit = self._edit_for(prop)
+        cap_exprs: tuple[str, ...] = ()
+        if prop == "Viscosity":
+            cap_exprs = tuple(m[1] for m in self._cap_materials)
+        elif prop == "Surface tension":
+            cap_exprs = tuple(m[0] for m in self._cap_materials)
+        self.plotCanvas.plot_material_comparison(
+            prop, edit.text(), cap_exprs, len(cap_exprs)
         )
 
     # -- data exchange ---------------------------------------------------------
@@ -207,7 +213,6 @@ class JacketTab(QWidget):
         return {
             "r0": mm_to_m(read_double(self.d0Edit, 2.4)) / 2.0,
             "R0": mm_to_m(read_double(self.D0Edit, 8.3556)) / 2.0,
-            "furnace_profile_expr": self.furnaceProfileEdit.text().strip(),
             "rho_expr": self.rhoEdit.text().strip(),
             "gamma_expr": self.gammaEdit.text().strip(),
             "cp_expr": self.cpEdit.text().strip(),
@@ -218,7 +223,6 @@ class JacketTab(QWidget):
     def apply_inputs(self, inputs: SimulationInputs) -> None:
         self.D0Edit.setText(f"{inputs.R0 * 2e3:.10g}")
         self.d0Edit.setText(f"{inputs.r0 * 2e3:.10g}")
-        self.furnaceProfileEdit.setText(inputs.furnace_profile_expr)
         self.rhoEdit.setText(inputs.rho_expr)
         self.gammaEdit.setText(inputs.gamma_expr)
         self.cpEdit.setText(inputs.cp_expr)

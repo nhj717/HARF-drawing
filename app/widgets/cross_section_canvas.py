@@ -1,14 +1,13 @@
 """Interactive 2D fiber cross-section renderer (the "Schematic" view).
 
-A Matplotlib axes (equal aspect) linked to a ``zmSlider`` scrubbing the
-axial position ``z`` over ``[0, z_end]``.  At each index the renderer
-draws:
+A Matplotlib axes (equal aspect, dark cyberpunk background) linked to a
+``zmSlider`` scrubbing the axial position ``z`` over ``[0, z_end]``.  At
+each index the renderer draws:
 
-* the jacket annulus (outer radius ``R(z)``, bore ``r(z)``),
+* the neon cyan jacket annulus (outer radius ``R(z)``, bore ``r(z)``),
 * ``N_cap`` capillaries of ring 1 tangent inside the jacket bore wall,
-  centred at radius ``r(z) - Rc1(z)``,
 * nested rings ``2..N_nested`` tangent inside each host capillary bore,
-  centred at radius ``rc_{i-1}(z) - Rc_i(z)``.
+  tinted pink (ring 1), green (ring 2), amber (ring 3).
 """
 
 from __future__ import annotations
@@ -26,6 +25,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.theme import (
+    BG_DARK,
+    CYAN,
+    CYAN_DARK,
+    RING_FACE_COLORS,
+    SURFACE_LOWEST,
+    TEXT_MUTED,
+)
 from src.models import SimulationResult
 
 __all__ = ["CrossSectionCanvas"]
@@ -34,7 +41,7 @@ _SLIDER_STEPS = 1000
 
 
 class CrossSectionCanvas(QWidget):
-    """Slider-scrubbed fiber cross-section view."""
+    """Slider-scrubbed fiber cross-section view (neon schematic)."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -42,6 +49,7 @@ class CrossSectionCanvas(QWidget):
         self._index = 0
 
         self.figure = Figure(dpi=100)
+        self.figure.patch.set_facecolor(BG_DARK)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_aspect("equal")
@@ -51,7 +59,9 @@ class CrossSectionCanvas(QWidget):
         self.zmSlider.setEnabled(False)
         self.zmSlider.valueChanged.connect(self._on_slider)
         self.z_label = QLabel("z = -- mm")
-        self.z_label.setStyleSheet("color: #546e7a; font-family: monospace;")
+        self.z_label.setStyleSheet(
+            f"color: {TEXT_MUTED}; font-family: monospace;"
+        )
 
         slider_row = QHBoxLayout()
         slider_row.addWidget(QLabel("z position:"))
@@ -97,12 +107,20 @@ class CrossSectionCanvas(QWidget):
         self.ax.text(
             0.5, 0.5, "Run a computation to scrub the cross-section",
             ha="center", va="center", transform=self.ax.transAxes,
-            fontsize=10, color="#90a4ae",
+            fontsize=10, color=TEXT_MUTED,
         )
         self.ax.set_xticks([])
         self.ax.set_yticks([])
+        self._style_axes()
         self.figure.tight_layout()
         self.canvas.draw_idle()
+
+    def _style_axes(self) -> None:
+        self.figure.patch.set_facecolor(BG_DARK)
+        self.ax.set_facecolor(SURFACE_LOWEST)
+        self.ax.title.set_color(TEXT_MUTED)
+        for spine in self.ax.spines.values():
+            spine.set_color("#3a494a")
 
     def _refresh(self) -> None:
         result = self._result
@@ -121,15 +139,19 @@ class CrossSectionCanvas(QWidget):
         rings_i = [float(a[idx]) * 1e6 for a in result.rc]
         n_cap = int(result.inputs.n_capillaries)
 
-        # Jacket annulus (filled ring between r and R).
+        # Jacket annulus: neon cyan ring between r and R.
         self.ax.add_patch(
-            Wedge((0.0, 0.0), R, 0.0, 360.0, width=max(R - r, 1e-9),
-                  facecolor="#b0bec5", edgecolor="#455a64", lw=1.2)
+            Wedge(
+                (0.0, 0.0), R, 0.0, 360.0, width=max(R - r, 1e-9),
+                facecolor=CYAN_DARK, edgecolor=CYAN, lw=1.8,
+            )
         )
-        # Core hole.
+        # Core hole (dark).
         self.ax.add_patch(
-            Circle((0.0, 0.0), r, facecolor="#ffffff", edgecolor="#90a4ae",
-                   lw=0.8)
+            Circle(
+                (0.0, 0.0), r, facecolor=SURFACE_LOWEST,
+                edgecolor=CYAN_DARK, lw=0.8,
+            )
         )
 
         # Ring 1: N_cap capillaries tangent inside the jacket bore wall.
@@ -138,6 +160,7 @@ class CrossSectionCanvas(QWidget):
         for i, (rc_o, rc_i) in enumerate(zip(rings_o, rings_i, strict=True)):
             if rc_o <= 0.0 or rc_i <= 0.0 or rc_o > host_radius:
                 break
+            neon = RING_FACE_COLORS[i % len(RING_FACE_COLORS)]
             new_centers = []
             for cx, cy in centers:
                 offset = host_radius - rc_o
@@ -146,12 +169,16 @@ class CrossSectionCanvas(QWidget):
                     ccx = cx + offset * np.cos(theta)
                     ccy = cy + offset * np.sin(theta)
                     self.ax.add_patch(
-                        Circle((ccx, ccy), rc_o, facecolor="#eceff1",
-                               edgecolor="#546e7a", lw=1.0)
+                        Circle(
+                            (ccx, ccy), rc_o, facecolor=neon,
+                            edgecolor=neon, lw=1.2, alpha=0.85,
+                        )
                     )
                     self.ax.add_patch(
-                        Circle((ccx, ccy), rc_i, facecolor="#ffffff",
-                               edgecolor="#78909c", lw=0.8)
+                        Circle(
+                            (ccx, ccy), rc_i, facecolor=SURFACE_LOWEST,
+                            edgecolor=neon, lw=0.9,
+                        )
                     )
                     new_centers.append((ccx, ccy))
             centers = new_centers
@@ -166,5 +193,6 @@ class CrossSectionCanvas(QWidget):
             f"Cross-section at z = {z_mm:.2f} mm "
             f"({n_cap} capillaries, {len(rings_o)} nested ring(s))"
         )
+        self._style_axes()
         self.figure.tight_layout()
         self.canvas.draw_idle()

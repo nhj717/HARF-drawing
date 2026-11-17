@@ -10,6 +10,7 @@ import os
 import time
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -18,16 +19,22 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app.main import main  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
-from app.widgets.plot_canvas import SCHEMATIC_VIEW  # noqa: E402
+from app.widgets.plot_canvas import (  # noqa: E402
+    SCHEMATIC_VIEW,
+    TEMPERATURE_VIEW,
+    TENSION_VIEW,
+)
 from app.workers import OptimizationWorker, SimulationWorker  # noqa: E402
 from src.io_utils import read_results_table  # noqa: E402
 from src.models import (  # noqa: E402
+    DEFAULT_RHO,
     OptimizationInputs,
     OptimizationResult,
     SimulationResult,
     SimulationStatus,
     default_optimization_inputs,
     default_simulation_inputs,
+    mbar_to_pa,
     um_to_m,
 )
 from src.solvers import run_direct_simulation, run_optimization  # noqa: E402
@@ -96,8 +103,10 @@ def test_exact_v15_defaults(window: MainWindow) -> None:
     assert o.tmaxMaxEdit.text() == "1850"
     assert o.pcoreMinEdit.text() == "10"
     assert o.pcoreMaxEdit.text() == "20"
-    assert o.pcapMinEdit.text() == "50"
-    assert o.pcapMaxEdit.text() == "150"
+    assert o.pcapMinEdits[0].text() == "50"
+    assert o.pcapMaxEdits[0].text() == "150"
+    assert o.pcapMinEdits[1].text() == "50"
+    assert o.pcapMaxEdits[2].text() == "150"
 
 
 def test_build_inputs_matches_defaults(window: MainWindow) -> None:
@@ -272,18 +281,216 @@ def test_post_run_contact_badges(window: MainWindow, success_result) -> None:
 
 def test_jacket_property_preview(window: MainWindow) -> None:
     j = window.jacket_tab
-    j.propertyCombo.setCurrentText("Viscosity (log)")
-    j.refresh_preview()
+    j.propertyCombo.setCurrentText("Viscosity")
     assert j.plotCanvas.has_finite_data()
+    # Multi-curve overlay: cyan Jacket + pink Cap #1.
+    assert len(j.plotCanvas.ax.get_lines()) == 2
     j.viscosityEdit.setText("bad((")
-    j.refresh_preview()
-    assert not j.plotCanvas.has_finite_data()
+    # Only the (still valid) Cap #1 curve remains.
+    assert len(j.plotCanvas.ax.get_lines()) == 1
     j.viscosityEdit.setText("10^(-7.946)*exp(66337/T)")
+    assert len(j.plotCanvas.ax.get_lines()) == 2
+    # Single-curve property with a broken formula -> empty axes.
+    j.propertyCombo.setCurrentText("Volumic mass")
+    j.rhoEdit.setText("bad((")
+    assert not j.plotCanvas.has_finite_data()
+    j.rhoEdit.setText(DEFAULT_RHO)
+    assert j.plotCanvas.has_finite_data()
 
 
 def test_furnace_profile_preview(window: MainWindow) -> None:
-    window.jacket_tab.plot_furnace_profile(default_simulation_inputs())
-    assert window.jacket_tab.plotCanvas.has_finite_data()
+    p = window.parameter_tab
+    p.refresh_furnace_profile()
+    assert p.plotCanvas.has_finite_data()
+    assert p.plotCanvas.ax.get_xlabel() == "z (m)"
+    assert p.plotCanvas.ax.get_xlim()[1] == pytest.approx(0.065)
+
+
+# ---------------------------------------------------------------------------
+# A1+: Cyberpunk Neon theme, live startup plots, cross-tab refresh
+# ---------------------------------------------------------------------------
+
+
+def test_cyberpunk_theme_applied(window: MainWindow) -> None:
+    from matplotlib.colors import to_hex
+
+    from app.theme import BG_DARK, CYAN, SURFACE_LOWEST
+
+    qss = window.styleSheet()
+    assert BG_DARK in qss
+    assert CYAN in qss
+    canvas = window.jacket_tab.plotCanvas
+    assert to_hex(canvas.figure.patch.get_facecolor()) == BG_DARK
+    assert to_hex(canvas.ax.get_facecolor()) == SURFACE_LOWEST
+    for spine in canvas.ax.spines.values():
+        assert to_hex(spine.get_edgecolor()) != "#000000"
+
+
+def test_all_tabs_startup_live_plots(window: MainWindow) -> None:
+    p = window.parameter_tab
+    j = window.jacket_tab
+    c = window.capillaries_tab
+    d = window.direct_tab
+    o = window.optimization_tab
+    # Tab 1: normalized furnace profile on [0, Lfour].
+    assert p.plotCanvas.has_finite_data()
+    assert p.plotCanvas.ax.get_xlim()[1] == pytest.approx(0.065)
+    # Tabs 2 + 3: material curves over [250, 2500] K, 250 K ticks.
+    for tab in (j, c):
+        assert tab.plotCanvas.has_finite_data()
+        ax = tab.plotCanvas.ax
+        expected = [float(t) for t in np.arange(250.0, 2501.0, 250.0)]
+        assert [float(t) for t in ax.get_xticks()] == expected
+        assert ax.get_xlim() == (250.0, 2500.0)
+    # Tabs 4 + 5: pre-run furnace temperature profile by default.
+    assert d.viewCombo.currentText() == TEMPERATURE_VIEW
+    assert d.plotCanvas.has_finite_data()
+    assert d.plotCanvas.ax.get_title() == "Furnace temperature profile"
+    assert o.viewCombo.currentText() == TEMPERATURE_VIEW
+    assert o.plotCanvas.has_finite_data()
+    assert o.plotCanvas.ax.get_title() == "Furnace temperature profile"
+
+
+def test_cross_tab_live_refresh(window: MainWindow) -> None:
+    j = window.jacket_tab
+    j.propertyCombo.setCurrentText("Viscosity")
+    assert len(j.plotCanvas.ax.get_lines()) == 2  # Jacket + Cap #1
+    # Nnested change adds a Cap #2 curve on the Jacket preview.
+    window.capillaries_tab.nestedSpinBox.setValue(2)
+    assert len(j.plotCanvas.ax.get_lines()) == 3
+    # Lfour edit rescales the ParameterTab furnace profile.
+    p = window.parameter_tab
+    assert p.plotCanvas.ax.get_xlim()[1] == pytest.approx(0.065)
+    p.LfourEdit.setText("0.05")
+    assert p.plotCanvas.ax.get_xlim()[1] == pytest.approx(0.05)
+    # Tmax edit rescales the DirectTab pre-run profile.
+    d = window.direct_tab
+    ys = d.plotCanvas.ax.get_lines()[0].get_ydata()
+    assert float(np.max(ys)) == pytest.approx(1806.9, abs=1.0)
+    d.TmaxEdit.setText("2000")
+    ys = d.plotCanvas.ax.get_lines()[0].get_ydata()
+    assert float(np.max(ys)) == pytest.approx(2000.0, abs=1.0)
+    # Optimization pre-run profile follows too.
+    o = window.optimization_tab
+    ys = o.plotCanvas.ax.get_lines()[0].get_ydata()
+    assert float(np.max(ys)) == pytest.approx(2000.0, abs=1.0)
+
+
+# ---------------------------------------------------------------------------
+# A2+: post-run KPI readouts, draw tension in g, optimization views
+# ---------------------------------------------------------------------------
+
+
+def test_direct_post_run_kpi_readouts(
+    window: MainWindow, success_result: SimulationResult
+) -> None:
+    d = window.direct_tab
+    d.set_result(success_result)
+    assert d.finalOutputBox.isVisibleTo(d)
+    g = float(success_result.inputs.g)
+    assert float(d.kpiVf.value_text()) == pytest.approx(
+        success_result.w[-1] * 60.0 * 1e3, rel=1e-3
+    )
+    assert float(d.kpiDf.value_text()) == pytest.approx(
+        2.0 * success_result.R[-1] * 1e6, rel=1e-3
+    )
+    assert float(d.kpiDfBore.value_text()) == pytest.approx(
+        2.0 * success_result.r[-1] * 1e6, rel=1e-3
+    )
+    assert float(d.kpiDcore.value_text()) == pytest.approx(
+        success_result.D_core[-1] * 1e6, rel=1e-3
+    )
+    assert float(d.kpiDcf.value_text()) == pytest.approx(
+        2.0 * success_result.Rc[0][-1] * 1e6, rel=1e-3
+    )
+    assert float(d.kpiTf.value_text()) == pytest.approx(
+        (success_result.Rc[0][-1] - success_result.rc[0][-1]) * 1e6,
+        rel=1e-3,
+    )
+    assert d.finalContactBadge.ratio is not None
+    assert d.ringRatioBadges[0].ratio is not None
+    # Draw tension is plotted in grams.
+    d.viewCombo.setCurrentText(TENSION_VIEW)
+    assert d.plotCanvas.has_finite_data()
+    assert d.plotCanvas.ax.get_ylabel() == "Draw tension (g)"
+    line = d.plotCanvas.ax.get_lines()[0]
+    assert line.get_ydata()[-1] == pytest.approx(
+        success_result.tau[-1] / g * 1000.0, rel=1e-6
+    )
+    # A failed run hides the KPI panel again.
+    bad = run_direct_simulation(
+        default_simulation_inputs().with_process(Pcore=1e6)
+    )
+    d.set_result(bad)
+    assert not d.finalOutputBox.isVisibleTo(d)
+
+
+def test_optimization_views_and_zmslider2(
+    window: MainWindow, success_result: SimulationResult
+) -> None:
+    o = window.optimization_tab
+    assert o.viewCombo.count() == 12
+    assert o.viewCombo.currentText() == TEMPERATURE_VIEW
+    solution = OptimizationResult(
+        status=SimulationStatus.SUCCESS,
+        targets=None,
+        Tmax_C=1806.9,
+        Pcore=1560.0,
+        Pcap=(6340.0,),
+        result=success_result,
+        cost=0.0,
+    )
+    o.set_solution(solution)
+    assert o.plotCanvas.has_finite_data()
+    for i in range(o.viewCombo.count()):
+        o.viewCombo.setCurrentIndex(i)
+        view = o.viewCombo.currentText()
+        if view == SCHEMATIC_VIEW:
+            assert o.view_stack.currentIndex() == 1
+            assert o.crossSection.z_label.text() != "z = -- mm"
+        else:
+            assert o.view_stack.currentIndex() == 0
+            assert o.plotCanvas.has_finite_data(), f"view {view!r} empty"
+    assert o.zmSlider_2 is o.crossSection.zmSlider
+    o.viewCombo.setCurrentText(SCHEMATIC_VIEW)
+    o.zmSlider_2.setValue(1000)
+    assert o.crossSection.z_label.text() != "z = -- mm"
+
+
+def test_optimization_per_ring_pcap_windows(window: MainWindow) -> None:
+    o = window.optimization_tab
+    assert o.pcapMinEdits[0].isEnabled()
+    assert not o.pcapMinEdits[1].isEnabled()
+    assert not o.pcapMaxEdits[2].isEnabled()
+    o.pcapMinEdits[1].setText("80")
+    o.pcapMaxEdits[1].setText("200")
+    o.pcapMinEdits[2].setText("120")
+    o.pcapMaxEdits[2].setText("300")
+    window.capillaries_tab.nestedSpinBox.setValue(3)
+    assert o.pcapMinEdits[1].isEnabled()
+    assert o.pcapMaxEdits[2].isEnabled()
+    opt = o.to_inputs(3)
+    assert opt.Pcap_min == (
+        mbar_to_pa(50.0), mbar_to_pa(80.0), mbar_to_pa(120.0),
+    )
+    assert opt.Pcap_max[2] == pytest.approx(mbar_to_pa(300.0))
+    window.capillaries_tab.nestedSpinBox.setValue(1)
+    assert not o.pcapMinEdits[2].isEnabled()
+    assert len(o.to_inputs(1).Pcap_min) == 1
+
+
+def test_optimization_live_kpi_preview(window: MainWindow) -> None:
+    o = window.optimization_tab
+    assert o.kpiVf.value_text() != "--"
+    assert o.boreRatioBadge.ratio is not None
+    assert o.contactBadge.ratio is not None
+    # Impossible targets flag the warning banner and clear the cards.
+    o.tfEdit.setText("200")
+    assert o.warn_banner.isVisibleTo(o)
+    assert o.kpiVf.value_text() == "--"
+    o.tfEdit.setText("3.5")
+    assert not o.warn_banner.isVisibleTo(o)
+    assert o.kpiVf.value_text() != "--"
 
 
 # ---------------------------------------------------------------------------
