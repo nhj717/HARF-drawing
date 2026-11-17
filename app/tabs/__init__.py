@@ -1,0 +1,1 @@
+"""The five workstation tabs."""

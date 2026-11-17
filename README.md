@@ -15,8 +15,39 @@ The method used in this software is that described in the paper of Jasion *et al
 - The tab "Direct computation" computes the evolution of all the structural fiber parameters during the drawing process with the input chosen by the user.
 - The tab "Optimization" computes the pressures and the furnace temperature that allow to obtain a target fiber from a given preform.
 - The tab "Parameters" (version >1.3) allows to modify the materials properties that can depends on the temperature.
+- The Python port adds a "Jacket" tab (preform geometry + live material-law previews)
+  and a "Capillaries" tab (Ncap azimuthal capillaries and 1-3 nested rings with
+  live red/green contact badges), a 12-view plot area with a z-scrubbed
+  cross-section schematic, `.json` config save/load, `.csv`/`.txt` result export,
+  and a crash-proof diagnostic banner with actionable advice on failed draws.
 
 ### Installation
+
+#### Python port (recommended)
+
+The MATLAB application has been ported to Python (PySide6 + NumPy/SciPy).
+From the repository root:
+
+```bash
+uv sync          # create .venv and install all dependencies
+```
+
+Run the 5-tab desktop workstation:
+
+```bash
+uv run harf-drawing            # launch the GUI
+uv run harf-drawing --help     # command-line options (--config FILE)
+```
+
+Run the test suite (unit, invariant, safety, I/O, and headless offscreen
+Qt GUI tests) and the linter:
+
+```bash
+uv run pytest
+uv run ruff check .
+```
+
+#### Original MATLAB version
 
 The application has been designed with MATLAB R2024b with the optimization and parallel toolboxes. It can be launched directly from the source code: the main file is *HARF_drawing.mlapp*. If you do not have this matlab version/toolbox, an installation file for windows 10/11 is provided in the release. 
 

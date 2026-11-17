@@ -59,4 +59,5 @@
 ## Session Notes
 
 - 2026-11-16: Initial workspace setup completed (uv env, `reference/`
-  reorganization, Python skeleton, junk cleanup).
+  reorganization, Python skeleton, junk cleanup); pushed to `git@github.com:nhj717/HARF-drawing.git`.
+- 2026-11-17: Completed & verified Milestone 1 (`src/` decoupled 4-state + 1-state/ring ODE solver, `273.15` K & `viscosity_3` fixes, `brentq` + TRF optimizer, crash-proof safety net, `.csv`/`.txt`/`.json` I/O — 99/99 tests passed) and Milestone 2 (`app/` 5-tab PySide6 + Matplotlib desktop workstation, `QThread` cancelable workers, 12 plot views + `zmSlider` 2D cross-section schematic — 30/30 offscreen GUI tests passed).
