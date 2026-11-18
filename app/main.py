@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
+from PySide6.QtCore import QLocale
 from PySide6.QtWidgets import QApplication
 
 from app.main_window import MainWindow
+from src.io_utils import default_user_config_path
 
 __all__ = ["main"]
 
@@ -34,12 +37,20 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _resolve_config_path(args: argparse.Namespace) -> Path:
+    """Config used at startup: ``--config`` or the last-session default."""
+    return Path(args.config) if args.config else default_user_config_path()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    # Force the C locale ('.' decimal separator) regardless of the OS
+    # locale, so every numeric field formats/accepts '.' decimals.
+    QLocale.setDefault(QLocale.c())
     app = QApplication.instance() or QApplication(
         ["harf-drawing"] if argv is not None else sys.argv
     )
-    window = MainWindow(config_path=args.config)
+    window = MainWindow(config_path=_resolve_config_path(args))
     window.show()
     return app.exec()
 

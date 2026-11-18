@@ -115,6 +115,8 @@ class OptimizationTab(QWidget):
         )
         self.pcapMinEdits = []
         self.pcapMaxEdits = []
+        self.pcapMinLabels: list[QLabel] = []
+        self.pcapMaxLabels: list[QLabel] = []
         for i in range(MAX_NESTED_RINGS):
             self.pcapMinEdits.append(
                 make_double_edit(
@@ -128,6 +130,8 @@ class OptimizationTab(QWidget):
                     tooltip=f"Ring {i + 1} Pcap max [mbar]",
                 )
             )
+            self.pcapMinLabels.append(QLabel(f"Pcap{i + 1} min [mbar]"))
+            self.pcapMaxLabels.append(QLabel(f"Pcap{i + 1} max [mbar]"))
         bounds_box = QGroupBox("Search windows")
         bform = QFormLayout(bounds_box)
         bform.addRow("Tmax min [C]", self.tmaxMinEdit)
@@ -135,8 +139,8 @@ class OptimizationTab(QWidget):
         bform.addRow("Pcore min [mbar]", self.pcoreMinEdit)
         bform.addRow("Pcore max [mbar]", self.pcoreMaxEdit)
         for i in range(MAX_NESTED_RINGS):
-            bform.addRow(f"Pcap{i + 1} min [mbar]", self.pcapMinEdits[i])
-            bform.addRow(f"Pcap{i + 1} max [mbar]", self.pcapMaxEdits[i])
+            bform.addRow(self.pcapMinLabels[i], self.pcapMinEdits[i])
+            bform.addRow(self.pcapMaxLabels[i], self.pcapMaxEdits[i])
 
         # -- live derived-target KPI preview --------------------------------
         self.kpiVf = make_kpi_card("Vf", unit="mm/min")
@@ -210,12 +214,15 @@ class OptimizationTab(QWidget):
         solved_box = QGroupBox("Solved parameters")
         self.solvedTmaxLabel = QLabel("Tmax = --")
         self.solvedPcoreLabel = QLabel("Pcore = --")
-        self.solvedPcapLabel = QLabel("Pcap = --")
+        self.solvedPcapLabels = [
+            QLabel(f"Pcap{i + 1} = --") for i in range(MAX_NESTED_RINGS)
+        ]
         self.solvedCostLabel = QLabel("Cost = --")
         solved_form = QFormLayout(solved_box)
         solved_form.addRow(self.solvedTmaxLabel)
         solved_form.addRow(self.solvedPcoreLabel)
-        solved_form.addRow(self.solvedPcapLabel)
+        for label in self.solvedPcapLabels:
+            solved_form.addRow(label)
         solved_form.addRow(self.solvedCostLabel)
 
         self.applyButton = QPushButton("Apply to Direct Computation")
@@ -445,10 +452,13 @@ class OptimizationTab(QWidget):
             f"Pcore = {result.Pcore / 100.0:.6g} mbar"
             if result.ok else "Pcore = --"
         )
-        pcap_txt = ", ".join(
-            f"{p / 100.0:.6g}" for p in result.Pcap
-        ) or "--"
-        self.solvedPcapLabel.setText(f"Pcap = [{pcap_txt}] mbar")
+        for i, label in enumerate(self.solvedPcapLabels):
+            if result.ok and i < len(result.Pcap):
+                label.setText(
+                    f"Pcap{i + 1} = {result.Pcap[i] / 100.0:.6g} mbar"
+                )
+            else:
+                label.setText(f"Pcap{i + 1} = --")
         cost = "n/a" if result.cost is None else f"{result.cost:.3e}"
         self.solvedCostLabel.setText(f"Cost = {cost}")
         if result.ok:
@@ -490,12 +500,22 @@ class OptimizationTab(QWidget):
 
     # -- data exchange ------------------------------------------------------------
     def set_nb_nested(self, nb_nested: int) -> None:
-        """Enable exactly the first ``nb_nested`` Pcap window pairs."""
+        """Enable exactly the first ``nb_nested`` Pcap window pairs.
+
+        Also gates the per-ring bound labels, the live derived-target
+        inter-ring badges and the solved ``Pcap i`` readout labels so
+        blocked rings look visually locked.
+        """
         nb = max(1, min(int(nb_nested), MAX_NESTED_RINGS))
         for i in range(MAX_NESTED_RINGS):
             enabled = i < nb
             self.pcapMinEdits[i].setEnabled(enabled)
             self.pcapMaxEdits[i].setEnabled(enabled)
+            self.pcapMinLabels[i].setEnabled(enabled)
+            self.pcapMaxLabels[i].setEnabled(enabled)
+            self.solvedPcapLabels[i].setEnabled(enabled)
+        for j, badge in enumerate(self.nestedBadges):
+            badge.setEnabled(nb >= j + 2)
 
     def to_inputs(self, nb_nested: int) -> OptimizationInputs:
         nb = max(1, int(nb_nested))

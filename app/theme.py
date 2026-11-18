@@ -299,6 +299,14 @@ QSpinBox::down-button, QDoubleSpinBox::down-button {{
     border: none;
     width: 16px;
 }}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
+    background-color: {surface_lowest};
+    color: {text_muted};
+    border: 1px solid {border_subtle};
+}}
+QLabel:disabled {{
+    color: {text_muted};
+}}
 QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
     background-color: {cyan_accent};
@@ -373,6 +381,15 @@ QGroupBox::title {{
     letter-spacing: 0.5px;
     background-color: {surface_low};
     border-radius: 3px;
+}}
+QGroupBox:disabled {{
+    border-color: {border_subtle};
+    background-color: {surface_lowest};
+    color: {text_muted};
+}}
+QGroupBox:disabled::title {{
+    color: {text_muted};
+    background-color: {surface_lowest};
 }}
 
 /* Sliders */
@@ -491,6 +508,12 @@ KpiCard {{
     border-radius: 6px;
     padding: 6px 10px;
 }}
+KpiCard:disabled {{
+    background-color: {surface_lowest};
+    border: 1px solid {border_subtle};
+    border-top: 2px solid {border_subtle};
+    color: {text_muted};
+}}
 KpiCard:hover {{
     border-color: {cyan_accent};
     background-color: {surface};
@@ -598,6 +621,11 @@ class KpiCard(QFrame):
             KpiCard:hover {{
                 border-color: {accent_color};
                 background-color: {SURFACE};
+            }}
+            KpiCard:disabled {{
+                background-color: {SURFACE_LOWEST};
+                border: 1px solid {BORDER_SUBTLE};
+                border-top: 2px solid {BORDER_SUBTLE};
             }}
         """)
 

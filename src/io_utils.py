@@ -34,6 +34,7 @@ __all__ = [
     "export_results_table",
     "load_config_json",
     "read_results_table",
+    "read_ui_state",
     "save_config_json",
 ]
 
@@ -243,8 +244,14 @@ def save_config_json(
     inputs: SimulationInputs,
     opt: OptimizationInputs | None = None,
     path: str | Path | None = None,
+    ui_state: dict[str, Any] | None = None,
 ) -> Path:
-    """Save the simulation (and optimization) inputs as JSON."""
+    """Save the simulation (and optimization) inputs as JSON.
+
+    ``ui_state`` optionally carries GUI-only values that the dataclasses
+    cannot represent (e.g. inactive Ring 2/3 edits while
+    ``Nnested = 1``) so reopening never loses typed values.
+    """
     path = Path(path) if path is not None else default_user_config_path()
     payload: dict[str, Any] = {
         "version": _CONFIG_VERSION,
@@ -252,10 +259,29 @@ def save_config_json(
     }
     if opt is not None:
         payload["optimization"] = _to_jsonable(opt)
+    if ui_state is not None:
+        payload["ui_state"] = ui_state
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2, sort_keys=True)
     return path
+
+
+def read_ui_state(path: str | Path) -> dict[str, Any]:
+    """Read the optional ``ui_state`` block from a config file.
+
+    Returns an empty dict for missing/unreadable files or configs saved
+    without GUI state, so callers can merge unconditionally.
+    """
+    try:
+        with open(Path(path), encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    state = payload.get("ui_state")
+    return state if isinstance(state, dict) else {}
 
 
 def load_config_json(

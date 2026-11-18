@@ -15,8 +15,13 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QLocale, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QScrollArea,
+    QSplitter,
+)
 
 from app.main import main  # noqa: E402
 from app.main_window import MainWindow  # noqa: E402
@@ -841,3 +846,207 @@ def test_plot_canvas_fills_panel_and_window_fits_laptop(qapp) -> None:
         assert pc.height() > 0
         assert pc.canvas.height() >= 0.7 * pc.height()
     win.close()
+
+
+# ---------------------------------------------------------------------------
+# A6: German-locale decimal fix, full Nnested gating, horizontal Direct
+# splitter, and last-session persistence (ui_state round-trips).
+# ---------------------------------------------------------------------------
+
+
+def test_german_locale_forced_to_c(qapp) -> None:
+    """A de_DE OS locale never leaks ',' into numeric fields."""
+    german = QLocale(QLocale.Language.German, QLocale.Country.Germany)
+    QLocale.setDefault(german)
+    try:
+        win = MainWindow()
+        assert QLocale().language() == QLocale.Language.C
+        assert QLocale().decimalPoint() == "."
+        j, d, o = (
+            win.jacket_tab, win.direct_tab, win.optimization_tab
+        )
+        assert j.d0Edit.text() == "2.4"  # '.', never ','
+        assert d.TmaxEdit.text() == "1806.9"
+        assert o.tfEdit.text() == "3.5"
+        # Typing '.' decimals works via real keystrokes.
+        j.d0Edit.clear()
+        QTest.keyClicks(j.d0Edit, "2.65")
+        qapp.processEvents()
+        assert j.d0Edit.text() == "2.65"
+        d.PcoreEdit.clear()
+        QTest.keyClicks(d.PcoreEdit, "12.75")
+        qapp.processEvents()
+        assert d.PcoreEdit.text() == "12.75"
+        win.close()
+    finally:
+        QLocale.setDefault(QLocale.system())
+
+
+def test_nb_nested_gating_across_all_tabs(window: MainWindow) -> None:
+    """Nnested blocks/enables Ring 2 + Ring 3 widgets on all 3 tabs."""
+    c, d, o = (
+        window.capillaries_tab, window.direct_tab,
+        window.optimization_tab,
+    )
+
+    def assert_ring2(enabled: bool) -> None:
+        # Capillaries: Ring-2 box + Dc02/dc01 badge.
+        assert c.ring_boxes[1].isEnabled() is enabled
+        assert c.nestedBadges[0].isEnabled() is enabled
+        # Direct: Pcap2 input/label, per-ring badge, inter-ring badge.
+        assert d.pcapEdits[1].isEnabled() is enabled
+        assert d.pcapLabels[1].isEnabled() is enabled
+        assert d.ringRatioBadges[1].isEnabled() is enabled
+        assert d.maxNest2Badge.isEnabled() is enabled
+        # Optimization: Pcap2 bounds + labels, badges, solved readout.
+        assert o.pcapMinEdits[1].isEnabled() is enabled
+        assert o.pcapMaxEdits[1].isEnabled() is enabled
+        assert o.pcapMinLabels[1].isEnabled() is enabled
+        assert o.pcapMaxLabels[1].isEnabled() is enabled
+        assert o.nestedBadges[0].isEnabled() is enabled
+        assert o.solvedPcapLabels[1].isEnabled() is enabled
+
+    def assert_ring3(enabled: bool) -> None:
+        assert c.ring_boxes[2].isEnabled() is enabled
+        assert c.nestedBadges[1].isEnabled() is enabled
+        assert d.pcapEdits[2].isEnabled() is enabled
+        assert d.pcapLabels[2].isEnabled() is enabled
+        assert d.ringRatioBadges[2].isEnabled() is enabled
+        assert d.maxNest3Badge.isEnabled() is enabled
+        assert o.pcapMinEdits[2].isEnabled() is enabled
+        assert o.pcapMaxEdits[2].isEnabled() is enabled
+        assert o.pcapMinLabels[2].isEnabled() is enabled
+        assert o.pcapMaxLabels[2].isEnabled() is enabled
+        assert o.nestedBadges[1].isEnabled() is enabled
+        assert o.solvedPcapLabels[2].isEnabled() is enabled
+
+    # Nnested = 1 (default): Ring 2 and Ring 3 fully blocked.
+    assert_ring2(False)
+    assert_ring3(False)
+    # Nnested = 2: Ring 2 unlocked, Ring 3 still blocked.
+    c.nestedSpinBox.setValue(2)
+    assert_ring2(True)
+    assert_ring3(False)
+    # Nnested = 3: everything unlocked.
+    c.nestedSpinBox.setValue(3)
+    assert_ring2(True)
+    assert_ring3(True)
+    # Back to 1: blocked again.
+    c.nestedSpinBox.setValue(1)
+    assert_ring2(False)
+    assert_ring3(False)
+
+
+def test_direct_tab_horizontal_splitter(qapp) -> None:
+    """Direct tab: controls left, plot/schematic right (>= 450 px tall)."""
+    win = MainWindow()
+    win.resize(1280, 800)
+    win.show()
+    qapp.processEvents()
+    d = win.direct_tab
+    win.tabs.setCurrentWidget(d)
+    qapp.processEvents()
+    splitter = d.splitter
+    assert isinstance(splitter, QSplitter)
+    assert splitter.orientation() == Qt.Orientation.Horizontal
+    assert splitter.count() == 2
+    # Left pane: scroll-wrapped controls hosting the process group box.
+    assert isinstance(splitter.widget(0), QScrollArea)
+    assert splitter.widget(0).widget().isAncestorOf(
+        d.pcapEdits[0]
+    )
+    # Right pane: view dropdown + view stack (plot + cross-section).
+    assert splitter.widget(1).isAncestorOf(d.view_stack)
+    assert splitter.widget(1).isAncestorOf(d.plotCanvas)
+    assert splitter.sizes()[1] > splitter.sizes()[0]
+    assert d.plotCanvas.canvas.height() >= 450
+    win.close()
+
+
+def test_main_defaults_to_last_session_config(tmp_path, monkeypatch) -> None:
+    """``uv run harf-drawing`` reuses the user's default config path."""
+    import app.main as m
+
+    session = tmp_path / "session.json"
+    monkeypatch.setattr(
+        m, "default_user_config_path", lambda: session
+    )
+    assert m._resolve_config_path(m._parse_args([])) == session
+    explicit = tmp_path / "explicit.json"
+    args = m._parse_args(["--config", str(explicit)])
+    assert m._resolve_config_path(args) == explicit
+
+
+def test_close_reopen_session_persistence_full_restore(
+    qapp, tmp_path
+) -> None:
+    """Closing + reopening restores all 5 tabs incl. inactive rings."""
+    path = tmp_path / "fresh" / "deep" / "session.json"
+    win = MainWindow(config_path=path)
+    # Parameters / Jacket / Capillaries (incl. inactive Ring 2 edits).
+    win.parameter_tab.drawTensionEdit.setText("90")
+    win.jacket_tab.d0Edit.setText("2.6")
+    win.capillaries_tab.dcEdits[1].setText("0.36")
+    win.capillaries_tab.dccEdits[1].setText("0.30")
+    # Direct: process values incl. the inactive Ring-2 Pcap.
+    win.direct_tab.TmaxEdit.setText("1799.5")
+    win.direct_tab.pcapEdits[1].setText("77.7")
+    # Optimization: every target and bound, incl. inactive rings.
+    o = win.optimization_tab
+    o.tfEdit.setText("3.8")
+    o.Dcf1Edit.setText("115")
+    o.DcoreEdit.setText("160")
+    o.tmaxMinEdit.setText("1700")
+    o.tmaxMaxEdit.setText("1900")
+    o.pcoreMinEdit.setText("11")
+    o.pcoreMaxEdit.setText("21")
+    o.pcapMinEdits[0].setText("55")
+    o.pcapMaxEdits[0].setText("160")
+    o.pcapMinEdits[1].setText("60")
+    o.pcapMaxEdits[1].setText("170")
+    win.close()
+    assert path.exists()  # parent dirs auto-created on first save
+    payload = json.loads(path.read_text())
+    assert payload["ui_state"]["direct_pcap"][1] == "77.7"
+    assert payload["ui_state"]["optim_pcap_min"][1] == "60"
+
+    win2 = MainWindow(config_path=path)
+    assert win2.parameter_tab.drawTensionEdit.text() == "90"
+    assert win2.jacket_tab.d0Edit.text() == "2.6"
+    assert win2.direct_tab.TmaxEdit.text() == "1799.5"
+    assert win2.direct_tab.pcapEdits[1].text() == "77.7"
+    assert win2.capillaries_tab.dcEdits[1].text() == "0.36"
+    assert win2.capillaries_tab.dccEdits[1].text() == "0.30"
+    o2 = win2.optimization_tab
+    assert o2.tfEdit.text() == "3.8"
+    assert o2.Dcf1Edit.text() == "115"
+    assert o2.DcoreEdit.text() == "160"
+    assert o2.tmaxMinEdit.text() == "1700"
+    assert o2.tmaxMaxEdit.text() == "1900"
+    assert o2.pcoreMinEdit.text() == "11"
+    assert o2.pcoreMaxEdit.text() == "21"
+    assert o2.pcapMinEdits[0].text() == "55"
+    assert o2.pcapMaxEdits[0].text() == "160"
+    assert o2.pcapMinEdits[1].text() == "60"
+    assert o2.pcapMaxEdits[1].text() == "170"
+    # Switching Nnested keeps every typed ring value and unlocks it.
+    win2.capillaries_tab.nestedSpinBox.setValue(2)
+    assert win2.capillaries_tab.dcEdits[1].text() == "0.36"
+    assert win2.capillaries_tab.dcEdits[1].isEnabled()
+    assert o2.pcapMinEdits[1].isEnabled()
+    win2.close()
+
+
+def test_save_load_config_restores_ui_state(
+    window: MainWindow, tmp_path
+) -> None:
+    """Save/Load Config round-trips inactive Ring 2/3 fields too."""
+    path = tmp_path / "manual.json"
+    window.capillaries_tab.dcEdits[2].setText("0.25")
+    window.optimization_tab.pcapMaxEdits[2].setText("310")
+    window.save_config(path)
+    window.capillaries_tab.dcEdits[2].setText("0.99")
+    window.optimization_tab.pcapMaxEdits[2].setText("999")
+    window.load_config(path)
+    assert window.capillaries_tab.dcEdits[2].text() == "0.25"
+    assert window.optimization_tab.pcapMaxEdits[2].text() == "310"

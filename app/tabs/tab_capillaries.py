@@ -16,7 +16,7 @@ alerts.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QLocale, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -67,9 +67,11 @@ class CapillariesTab(QWidget):
         self.ncapSpinBox = QSpinBox()
         self.ncapSpinBox.setRange(1, 12)
         self.ncapSpinBox.setValue(2)
+        self.ncapSpinBox.setLocale(QLocale.c())
         self.nestedSpinBox = QSpinBox()
         self.nestedSpinBox.setRange(1, MAX_NESTED_RINGS)
         self.nestedSpinBox.setValue(1)
+        self.nestedSpinBox.setLocale(QLocale.c())
 
         self.contactBadge = RatioBadge(
             "Rc01 / Rcontact",
@@ -194,6 +196,10 @@ class CapillariesTab(QWidget):
         for i, box in enumerate(self.ring_boxes):
             box.setEnabled(i < nb)
             box.setVisible(True)
+        # Inter-ring badges Dc0(2)/dc01 and Dc0(3)/dc02 only make sense
+        # while the corresponding ring is active.
+        for j, badge in enumerate(self.nestedBadges):
+            badge.setEnabled(nb >= j + 2)
         self._update_badges()
 
     @property

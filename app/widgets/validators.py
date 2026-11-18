@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 
+from PySide6.QtCore import QLocale
 from PySide6.QtGui import QDoubleValidator, QIntValidator
 from PySide6.QtWidgets import QLabel, QLineEdit
 
@@ -47,6 +48,11 @@ _NEUTRAL_SS = (
     f"color: {NEUTRAL_COLOR}; border: 1px solid #3a494a; "
     "border-radius: 3px; padding: 1px 8px;"
 )
+_DISABLED_SS = (
+    f"color: {NEUTRAL_COLOR}; background: rgba(10, 14, 24, 0.65); "
+    "border: 1px dashed #3a494a; border-radius: 3px; "
+    "padding: 1px 8px; font-weight: bold;"
+)
 
 
 class RatioBadge(QLabel):
@@ -58,7 +64,13 @@ class RatioBadge(QLabel):
         self.ratio: float | None = None
         self.is_ok: bool | None = None
         self.setToolTip(tooltip or label)
+        self._ss = _NEUTRAL_SS
         self.setStyleSheet(_NEUTRAL_SS)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802 (Qt override)
+        """Toggle the badge and swap to a visually-locked style when off."""
+        super().setEnabled(bool(enabled))
+        self.setStyleSheet(_DISABLED_SS if not enabled else self._ss)
 
     def set_ratio(self, numerator: float, denominator: float) -> float | None:
         """Update the badge from the current values; returns the ratio."""
@@ -75,10 +87,12 @@ class RatioBadge(QLabel):
         self.is_ok = self.ratio is not None and self.ratio < 1.0
         if self.ratio is None:
             self.setText(f"{self._label} = invalid")
-            self.setStyleSheet(f"color: {BAD_COLOR}; font-weight: bold;")
+            self._ss = f"color: {BAD_COLOR}; font-weight: bold;"
         else:
             self.setText(f"{self._label} = {self.ratio:.3f}")
-            self.setStyleSheet(_GOOD_SS if self.is_ok else _BAD_SS)
+            self._ss = _GOOD_SS if self.is_ok else _BAD_SS
+        if self.isEnabled():
+            self.setStyleSheet(self._ss)
         return self.ratio
 
 
@@ -90,11 +104,19 @@ def make_double_edit(
     tooltip: str = "",
     parent=None,
 ) -> QLineEdit:
-    """A numeric line edit with locale-independent double validation."""
+    """A numeric line edit with locale-independent double validation.
+
+    The C locale (``.`` decimal point, no group separator) is pinned on
+    both the validator and the edit so a German (``de_DE``) OS locale
+    never renders ``2,4`` nor swallows ``.`` keystrokes.
+    """
     edit = QLineEdit(f"{float(value):.10g}", parent)
     validator = QDoubleValidator(minimum, maximum, decimals, edit)
     validator.setNotation(QDoubleValidator.StandardNotation)
-    edit.setValidator(validator)
+    c_loc = QLocale.c()
+    c_loc.setNumberOptions(QLocale.NumberOption.RejectGroupSeparator)
+    validator.setLocale(c_loc)
+    edit.setLocale(c_loc)
     if tooltip:
         edit.setToolTip(tooltip)
     return edit

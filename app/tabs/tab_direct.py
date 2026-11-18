@@ -10,7 +10,7 @@ result-export buttons.
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QProgressBar,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -33,6 +34,7 @@ from app.widgets.plot_canvas import (
     TEMPERATURE_VIEW,
     PlotCanvas,
 )
+from app.widgets.scroll import wrap_scroll
 from app.widgets.validators import (
     RatioBadge,
     make_double_edit,
@@ -44,6 +46,7 @@ from src.models import (
     DEFAULT_PCAP_MBAR,
     DEFAULT_PCORE_MBAR,
     DEFAULT_TMAX_C,
+    MAX_NESTED_RINGS,
     SimulationInputs,
     SimulationResult,
     mbar_to_pa,
@@ -74,7 +77,8 @@ class DirectTab(QWidget):
             tooltip="Core pressure Pcore [mbar]",
         )
         self.pcapEdits = []
-        for i in range(3):
+        self.pcapLabels: list[QLabel] = []
+        for i in range(MAX_NESTED_RINGS):
             edit = make_double_edit(
                 DEFAULT_PCAP_MBAR, -1e5, 1e5,
                 tooltip=f"Capillary {i + 1} absolute pressure [mbar]",
@@ -86,7 +90,9 @@ class DirectTab(QWidget):
         form.addRow("Furnace Tmax [C]", self.TmaxEdit)
         form.addRow("Core pressure Pcore [mbar]", self.PcoreEdit)
         for i, edit in enumerate(self.pcapEdits):
-            form.addRow(f"Capillary Pcap{i + 1} [mbar]", edit)
+            label = QLabel(f"Capillary Pcap{i + 1} [mbar]")
+            self.pcapLabels.append(label)
+            form.addRow(label, edit)
 
         self.runButton = QPushButton("Run computation")
         self.runButton.setObjectName("btn_primary")
@@ -146,24 +152,42 @@ class DirectTab(QWidget):
         # Post-run final-fiber KPI readouts (MATLAB output panel).
         self.finalOutputBox = self._build_final_output_panel()
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(process_box)
-        layout.addLayout(run_row)
-        layout.addWidget(self.progress_bar)
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.diag_banner)
-        layout.addLayout(badge_row)
-        layout.addWidget(self.finalOutputBox)
+        # Horizontal side-by-side splitter (controls left, plots right),
+        # matching Tabs 1, 2, 3 and 5.
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.addWidget(process_box)
+        left_layout.addLayout(run_row)
+        left_layout.addWidget(self.progress_bar)
+        left_layout.addWidget(self.status_label)
+        left_layout.addWidget(self.diag_banner)
+        left_layout.addLayout(badge_row)
+        left_layout.addWidget(self.finalOutputBox)
+        left_layout.addStretch(1)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
         plot_row = QHBoxLayout()
         plot_row.addWidget(QLabel("View:"))
         plot_row.addWidget(self.viewCombo)
         plot_row.addStretch(1)
         plot_row.addWidget(self.saveCsvButton)
         plot_row.addWidget(self.saveTxtButton)
-        layout.addLayout(plot_row)
-        layout.addWidget(self.view_stack, stretch=1)
+        right_layout.addLayout(plot_row)
+        right_layout.addWidget(self.view_stack, stretch=1)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(wrap_scroll(left))
+        self.splitter.addWidget(right)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setSizes([430, 830])
+
+        layout = QHBoxLayout(self)
+        layout.addWidget(self.splitter)
         for edit in (self.TmaxEdit, self.PcoreEdit, *self.pcapEdits):
             edit.textChanged.connect(self.inputs_changed)
+        self.set_nb_nested(1)
         self._on_view_changed(self.viewCombo.currentText())
 
     def _build_final_output_panel(self) -> QGroupBox:
@@ -204,6 +228,23 @@ class DirectTab(QWidget):
         inner.addLayout(badges)
         box.hide()
         return box
+
+    # -- dynamic state --------------------------------------------------------
+    def set_nb_nested(self, nb_nested: int) -> None:
+        """Enable exactly the first ``nb_nested`` capillary widgets.
+
+        Disables the ``Pcap i`` inputs and their form labels, the
+        per-ring post-run ratio badges and the inter-ring badges
+        (``max Dc2/dc1`` needs 2 rings, ``max Dc3/dc2`` needs 3).
+        """
+        nb = max(1, min(int(nb_nested), MAX_NESTED_RINGS))
+        for i in range(MAX_NESTED_RINGS):
+            enabled = i < nb
+            self.pcapEdits[i].setEnabled(enabled)
+            self.pcapLabels[i].setEnabled(enabled)
+            self.ringRatioBadges[i].setEnabled(enabled)
+        self.maxNest2Badge.setEnabled(nb >= 2)
+        self.maxNest3Badge.setEnabled(nb >= 3)
 
     # -- run / cancel --------------------------------------------------------
     def _on_run(self) -> None:
