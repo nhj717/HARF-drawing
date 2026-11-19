@@ -10,6 +10,7 @@ tests never touch the user's home directory.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from PySide6.QtCore import QLocale, QUrl
@@ -26,7 +27,7 @@ from app.tabs.tab_direct import DirectTab
 from app.tabs.tab_jacket import JacketTab
 from app.tabs.tab_optimization import OptimizationTab
 from app.tabs.tab_parameters import ParameterTab
-from app.theme import build_cyberpunk_qss
+from app.theme import build_cyberpunk_qss, set_application_font
 from app.workers import OptimizationWorker, SimulationWorker
 from src.io_utils import (
     load_config_json,
@@ -55,6 +56,11 @@ class MainWindow(QMainWindow):
         # Force the C locale ('.' decimal separator) on every widget of
         # this window, even when the OS runs e.g. German (de_DE).
         QLocale.setDefault(QLocale.c())
+        # Resolve the app font to an installed family BEFORE any widget
+        # (or Matplotlib canvas) is created: the Qt default resolves
+        # through the missing "Sans Serif" alias and logs a
+        # ``qt.qpa.fonts`` warning on first use.
+        set_application_font()
         self.setWindowTitle("HARF Drawing Simulation Workstation")
         self.resize(1280, 800)
         self.setStyleSheet(build_cyberpunk_qss())
@@ -76,6 +82,8 @@ class MainWindow(QMainWindow):
 
         self._direct_worker: SimulationWorker | None = None
         self._optimization_worker: OptimizationWorker | None = None
+        # Last successfully built inputs (skips no-op cross-tab refreshes).
+        self._last_cross_tab_inputs: SimulationInputs | None = None
 
         self._build_menu()
         self._build_statusbar()
@@ -173,8 +181,12 @@ class MainWindow(QMainWindow):
         try:
             inputs = self.build_inputs()
         except (TypeError, ValueError):  # invalid intermediate state
+            self._last_cross_tab_inputs = None
             self.optimization_tab.update_preview()
             return
+        if inputs == self._last_cross_tab_inputs:
+            return  # identical state: every plot/badge is already current
+        self._last_cross_tab_inputs = inputs
         self.parameter_tab.refresh_furnace_profile(
             inputs, tmax_c=inputs.Tmax_C
         )
@@ -326,7 +338,8 @@ class MainWindow(QMainWindow):
         """Silently persist the session to the startup config path."""
         if self.config_path is None:
             return
-        try:
+        # Persistence must never crash the GUI (invalid edits, IO errors).
+        with contextlib.suppress(Exception):
             inputs = self.build_inputs()
             opt = self.optimization_tab.to_inputs(inputs.nb_nested)
             save_config_json(
@@ -335,8 +348,6 @@ class MainWindow(QMainWindow):
                 self.config_path,
                 ui_state=self._collect_ui_state(),
             )
-        except Exception:  # noqa: BLE001 - persistence must never crash
-            pass
 
     def reset_defaults(self) -> None:
         nb = self.capillaries_tab.nb_nested
@@ -352,7 +363,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Defaults restored.")
 
     # -- shutdown -------------------------------------------------------------------
-    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def closeEvent(self, event) -> None:  # (Qt override)
         for worker in (self._direct_worker, self._optimization_worker):
             if worker is not None and worker.isRunning():
                 worker.cancel()

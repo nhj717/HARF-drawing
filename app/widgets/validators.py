@@ -67,7 +67,7 @@ class RatioBadge(QLabel):
         self._ss = _NEUTRAL_SS
         self.setStyleSheet(_NEUTRAL_SS)
 
-    def setEnabled(self, enabled: bool) -> None:  # noqa: N802 (Qt override)
+    def setEnabled(self, enabled: bool) -> None:  # (Qt override)
         """Toggle the badge and swap to a visually-locked style when off."""
         super().setEnabled(bool(enabled))
         self.setStyleSheet(_DISABLED_SS if not enabled else self._ss)
@@ -94,6 +94,15 @@ class RatioBadge(QLabel):
         if self.isEnabled():
             self.setStyleSheet(self._ss)
         return self.ratio
+
+    def reset(self) -> None:
+        """Neutral pre-run placeholder state (``label = --``)."""
+        self.ratio = None
+        self.is_ok = None
+        self.setText(f"{self._label} = --")
+        self._ss = _NEUTRAL_SS
+        if self.isEnabled():
+            self.setStyleSheet(self._ss)
 
 
 def make_double_edit(
@@ -143,7 +152,7 @@ def read_double(edit: QLineEdit, default: float = 0.0) -> float:
 def read_int(edit: QLineEdit, default: int = 1) -> int:
     """Parse the edit text as an integer, falling back to ``default``."""
     try:
-        return int(round(float(edit.text())))
+        return round(float(edit.text()))
     except ValueError:
         return int(default)
 
@@ -166,7 +175,7 @@ def attach_formula_validation(
         try:
             expr = CompiledExpression(text, variables)
             values = expr.validate(*([probe] * len(variables)), positive=False)
-            ok = bool(values.size) and bool((values == values).all())
+            ok = bool(values.size)
             if not ok:
                 raise ExpressionError("expression produced no valid samples")
             message = "Formula compiles and evaluates."

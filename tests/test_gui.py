@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from types import SimpleNamespace
 
@@ -15,24 +16,31 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QLocale, Qt  # noqa: E402
-from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import (  # noqa: E402
+from PySide6.QtCore import QLocale, Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
     QApplication,
     QScrollArea,
     QSplitter,
 )
 
-from app.main import main  # noqa: E402
-from app.main_window import MainWindow  # noqa: E402
-from app.widgets.plot_canvas import (  # noqa: E402
+from app.main import main
+from app.main_window import MainWindow
+from app.theme import (
+    build_cyberpunk_qss,
+    mono_font_family,
+)
+from app.widgets.cross_section_canvas import (
+    compute_capillary_centers,
+)
+from app.widgets.plot_canvas import (
     SCHEMATIC_VIEW,
     TEMPERATURE_VIEW,
     TENSION_VIEW,
 )
-from app.workers import OptimizationWorker, SimulationWorker  # noqa: E402
-from src.io_utils import read_results_table  # noqa: E402
-from src.models import (  # noqa: E402
+from app.workers import OptimizationWorker, SimulationWorker
+from src.io_utils import read_results_table
+from src.models import (
     DEFAULT_RHO,
     OptimizationInputs,
     OptimizationResult,
@@ -40,10 +48,11 @@ from src.models import (  # noqa: E402
     SimulationStatus,
     default_optimization_inputs,
     default_simulation_inputs,
+    m_per_s_to_m_per_min,
     mbar_to_pa,
     um_to_m,
 )
-from src.solvers import run_direct_simulation, run_optimization  # noqa: E402
+from src.solvers import run_direct_simulation, run_optimization
 
 
 @pytest.fixture(scope="module")
@@ -395,7 +404,7 @@ def test_direct_post_run_kpi_readouts(
     assert d.finalOutputBox.isVisibleTo(d)
     g = float(success_result.inputs.g)
     assert float(d.kpiVf.value_text()) == pytest.approx(
-        success_result.w[-1] * 60.0 * 1e3, rel=1e-3
+        success_result.w[-1] * 60.0, rel=1e-3
     )
     assert float(d.kpiDf.value_text()) == pytest.approx(
         2.0 * success_result.R[-1] * 1e6, rel=1e-3
@@ -423,12 +432,14 @@ def test_direct_post_run_kpi_readouts(
     assert line.get_ydata()[-1] == pytest.approx(
         success_result.tau[-1] / g * 1000.0, rel=1e-6
     )
-    # A failed run hides the KPI panel again.
+    # A failed run keeps the always-visible panel with placeholders.
     bad = run_direct_simulation(
         default_simulation_inputs().with_process(Pcore=1e6)
     )
     d.set_result(bad)
-    assert not d.finalOutputBox.isVisibleTo(d)
+    assert d.finalOutputBox.isVisibleTo(d)
+    assert d.kpiVf.value_text() == "--"
+    assert d.finalContactBadge.ratio is None
 
 
 def test_optimization_views_and_zmslider2(
@@ -668,7 +679,7 @@ def test_export_csv_txt_via_dialog(
     assert "z_m" in names and "D_um" in names
     assert len(cols["z_m"]) == len(success_result.z)
     assert meta["status"] == "success"
-    meta2, names2, cols2 = read_results_table(txt_path)
+    _meta2, names2, cols2 = read_results_table(txt_path)
     assert names2 == names
     assert len(cols2["z_m"]) == len(cols["z_m"])
 
@@ -780,7 +791,7 @@ def test_tabs45_pre_run_curve_bounds_and_view_gating(
         assert tab.viewCombo.currentText() == TEMPERATURE_VIEW
         _assert_curve_in_bounds(tab.plotCanvas.ax)
         # Un-run non-temperature views keep the empty-state prompt.
-        tab.viewCombo.setCurrentText("Velocity V (mm/min)")
+        tab.viewCombo.setCurrentText("Velocity V (m/min)")
         assert not tab.plotCanvas.has_finite_data()
         tab.viewCombo.setCurrentText(TEMPERATURE_VIEW)
         _assert_curve_in_bounds(tab.plotCanvas.ax)
@@ -1050,3 +1061,226 @@ def test_save_load_config_restores_ui_state(
     window.load_config(path)
     assert window.capillaries_tab.dcEdits[2].text() == "0.25"
     assert window.optimization_tab.pcapMaxEdits[2].text() == "310"
+
+
+# ---------------------------------------------------------------------------
+# A7: Vf m/min units, closed-form contact badge, nested schematic,
+#     compact final-outputs table, resolved fonts & fast tab switches.
+# ---------------------------------------------------------------------------
+
+
+def test_m_per_s_to_m_per_min_conversion() -> None:
+    """1 m/s == 60 m/min; arrays pass through elementwise."""
+    assert m_per_s_to_m_per_min(1.0 / 60.0) == pytest.approx(1.0)
+    arr = np.array([1.0 / 60.0, 2.0 / 60.0])
+    out = m_per_s_to_m_per_min(arr)
+    assert isinstance(out, np.ndarray)
+    assert out.shape == arr.shape
+    assert out[1] == pytest.approx(2.0)
+
+
+def test_feed_speed_w0_stays_mm_per_min(window: MainWindow) -> None:
+    """w0 keeps the mm/min convention: 4 mm/min == 4/60000 m/s."""
+    assert window.build_inputs().w0 == pytest.approx(4.0 / 60000.0)
+
+
+def test_optimization_contact_badge_closed_form(
+    window: MainWindow,
+) -> None:
+    """Default preview: Rcf1/Rcontact,f = 55/94; red from Ncap = 8."""
+    o = window.optimization_tab
+    o.update_preview()
+    assert o.contactBadge.ratio == pytest.approx(55.0 / 94.0, rel=1e-6)
+    assert o.contactBadge.is_ok is True
+    window.capillaries_tab.ncapSpinBox.setValue(8)
+    assert o.contactBadge.ratio is not None
+    assert o.contactBadge.ratio >= 1.0
+    assert o.contactBadge.is_ok is False
+    window.capillaries_tab.ncapSpinBox.setValue(2)
+    assert o.contactBadge.is_ok is True
+
+
+def test_compute_capillary_centers_nested_rings() -> None:
+    """3 nested rings x 6 azimuths -> [6, 6, 6] centers at 60/76/85."""
+    rings = compute_capillary_centers(
+        100.0, [40.0, 20.0, 8.0], [36.0, 17.0, 6.0], 6
+    )
+    assert [len(ring) for ring in rings] == [6, 6, 6]
+    for ring, dist in zip(rings, [60.0, 76.0, 85.0], strict=True):
+        for x, y in ring:
+            assert float(np.hypot(x, y)) == pytest.approx(dist)
+    # Exactly one capillary per azimuth per ring: theta_k = 2*pi*k/6.
+    for ring in rings:
+        angles = sorted(
+            float(np.arctan2(y, x)) % (2.0 * np.pi) for x, y in ring
+        )
+        assert angles == pytest.approx(
+            [2.0 * np.pi * k / 6.0 for k in range(6)]
+        )
+
+
+def test_solved_max_contact_badge(
+    window: MainWindow, success_result: SimulationResult
+) -> None:
+    """set_solution fills solvedMaxContactBadge = max Rc1/Rcontact."""
+    o = window.optimization_tab
+    expected = float(np.max(success_result.Rc[0] / success_result.R_contact))
+    assert success_result.max_rc1_over_rcontact == pytest.approx(expected)
+    solution = OptimizationResult(
+        status=SimulationStatus.SUCCESS,
+        targets=None,
+        Tmax_C=1806.9,
+        Pcore=1560.0,
+        Pcap=(6340.0,),
+        result=success_result,
+        cost=0.0,
+    )
+    o.set_solution(solution)
+    assert o.solvedMaxContactBadge.ratio == pytest.approx(expected, rel=1e-6)
+    if expected < 1.0:
+        assert o.solvedMaxContactBadge.is_ok is True
+    else:
+        assert o.solvedMaxContactBadge.is_ok is False
+    # Red styling contract: a ratio >= 1 flips the badge red.
+    o.solvedMaxContactBadge.set_ratio(1.5, 1.0)
+    assert o.solvedMaxContactBadge.is_ok is False
+    # A failed optimization resets the badge to the placeholder state.
+    bad = run_optimization(
+        default_simulation_inputs(),
+        OptimizationInputs(
+            tf=um_to_m(200.0),  # impossible: tf >> Dcf1
+            Dcf1=um_to_m(110.0),
+            Dcore=um_to_m(156.0),
+        ),
+    )
+    assert bad.status == SimulationStatus.INFEASIBLE
+    o.set_solution(bad)
+    assert o.solvedMaxContactBadge.ratio is None
+
+
+def test_velocity_view_and_legend_in_m_per_min(
+    window: MainWindow, success_result: SimulationResult
+) -> None:
+    """Velocity view + end-value legend report w*60 m/min."""
+    d = window.direct_tab
+    d.set_result(success_result)
+    d.viewCombo.setCurrentText("Velocity V (m/min)")
+    line = d.plotCanvas.ax.get_lines()[0]
+    y = np.asarray(line.get_ydata(), dtype=float)
+    assert y[-1] == pytest.approx(success_result.w[-1] * 60.0, rel=1e-6)
+    assert d.plotCanvas.ax.get_ylabel() == "w (m/min)"
+    legend_texts = [
+        t.get_text() for t in d.plotCanvas.ax.get_legend().get_texts()
+    ]
+    vf_texts = [t for t in legend_texts if t.startswith("Vf =")]
+    assert vf_texts, "no Vf end-value legend entry"
+    assert "m/min" in vf_texts[0]
+    assert float(vf_texts[0].split("=")[1].split()[0]) == pytest.approx(
+        success_result.w[-1] * 60.0, abs=0.01
+    )
+
+
+def test_final_output_box_compact_and_always_visible(qapp) -> None:
+    """Final-outputs table fits the left pane at 1280x800, pre-run too."""
+    win = MainWindow()
+    win.resize(1280, 800)
+    win.show()
+    qapp.processEvents()
+    d = win.direct_tab
+    win.tabs.setCurrentWidget(d)
+    qapp.processEvents()
+    # Visible pre-run with placeholder values (no run yet).
+    assert d.finalOutputBox.isVisibleTo(d)
+    assert d.kpiVf.value_text() == "--"
+    assert d.finalContactBadge.ratio is None
+    # Compact: fits the left scroll pane with zero horizontal overflow.
+    scroll = d.splitter.widget(0)
+    assert isinstance(scroll, QScrollArea)
+    assert d.finalOutputBox.sizeHint().width() <= scroll.viewport().width()
+    assert scroll.horizontalScrollBar().maximum() == 0
+    win.close()
+
+
+def test_tab_switch_latency_below_16ms(
+    qapp, success_result: SimulationResult
+) -> None:
+    """Average tab-switch cost stays under 16 ms with results loaded."""
+    win = MainWindow()
+    win.resize(1280, 800)
+    win.show()
+    qapp.processEvents()
+    d, o = win.direct_tab, win.optimization_tab
+    d.set_result(success_result)
+    d.viewCombo.setCurrentText(SCHEMATIC_VIEW)
+    o.set_solution(OptimizationResult(
+        status=SimulationStatus.SUCCESS,
+        targets=None,
+        Tmax_C=1806.9,
+        Pcore=1560.0,
+        Pcap=(6340.0,),
+        result=success_result,
+        cost=0.0,
+    ))
+    qapp.processEvents()
+    # Warm up every tab once (deferred rasters, layout passes).
+    for i in range(win.tabs.count()):
+        win.tabs.setCurrentIndex(i)
+        qapp.processEvents()
+    times: list[float] = []
+    for _ in range(3):
+        for i in range(win.tabs.count()):
+            t0 = time.perf_counter()
+            win.tabs.setCurrentIndex(i)
+            times.append(time.perf_counter() - t0)
+            qapp.processEvents()
+    avg = sum(times) / len(times)
+    assert avg < 0.016, f"avg tab switch {avg * 1e3:.1f} ms"
+    win.close()
+
+
+def test_qss_font_declarations_resolved(qapp) -> None:
+    """QSS font-family lists only resolved families (no bare monospace)."""
+    from PySide6.QtGui import QFontDatabase
+
+    installed = set(QFontDatabase.families())
+    qss = build_cyberpunk_qss()
+    declarations = re.findall(r"font-family:\s*([^;]+);", qss)
+    assert declarations
+    for decl in declarations:
+        names = re.findall(r"'([^']+)'", decl)
+        assert names, f"unresolved font-family: {decl!r}"
+        for name in names:
+            assert name in installed or name == "DejaVu Sans Mono"
+            assert name.lower() not in ("monospace", "sans-serif", "serif")
+    # The resolved mono family is a real installed family, never a generic.
+    mono = mono_font_family()
+    assert mono in installed or mono == "DejaVu Sans Mono"
+
+
+def test_matplotlib_monospace_stack_resolves_silently() -> None:
+    """The Matplotlib mono stack resolves with zero findfont warnings."""
+    import logging
+
+    import matplotlib as mpl
+    from matplotlib.font_manager import FontProperties, findfont
+
+    from app.theme import configure_matplotlib_fonts
+
+    configure_matplotlib_fonts()
+    families = list(mpl.rcParams["font.monospace"])
+    assert families[-1] == "DejaVu Sans Mono"
+    messages: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(record.getMessage())
+
+    handler = _Capture()
+    logger = logging.getLogger("matplotlib.font_manager")
+    logger.addHandler(handler)
+    try:
+        resolved = findfont(FontProperties(family=families))
+    finally:
+        logger.removeHandler(handler)
+    assert not messages, f"findfont warnings: {messages}"
+    assert FontProperties(fname=resolved).get_name() in families

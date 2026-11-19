@@ -6,7 +6,8 @@ Mirrors the GNLSE-Antigravity workstation theme:
 * cyan ``#00f5ff`` primary, pink ``#ff4b89`` secondary, purple ``#703eda``
   tertiary accents, green ``#00e676`` success, amber ``#ffab00`` warning,
   red ``#ff5252`` error,
-* monospaced HUD typography ('JetBrains Mono' first),
+* resolved monospaced HUD typography (installed families only, never a
+  bare ``monospace`` token that triggers macOS CoreText font scans),
 * neon-bordered KPI cards and dark neon Matplotlib figures.
 
 The neon curve cycle assigns cyan solid to the Jacket (primary curve)
@@ -15,9 +16,11 @@ and pink/green/amber dashed to capillary rings 1..3.
 
 from __future__ import annotations
 
-from typing import Optional
+import contextlib
+import sys
 
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -30,6 +33,8 @@ __all__ = [
     "BG_DARK",
     "BORDER",
     "BORDER_SUBTLE",
+    "CURVE_CAPS",
+    "CURVE_JACKET",
     "CYAN",
     "CYAN_BRIGHT",
     "CYAN_DARK",
@@ -42,6 +47,7 @@ __all__ = [
     "PURPLE_DARK",
     "PURPLE_LIGHT",
     "RED",
+    "RING_FACE_COLORS",
     "SURFACE",
     "SURFACE_BRIGHT",
     "SURFACE_HIGH",
@@ -50,14 +56,16 @@ __all__ = [
     "SURFACE_LOWEST",
     "TEXT_MUTED",
     "TEXT_PRIMARY",
-    "CURVE_JACKET",
-    "CURVE_CAPS",
-    "RING_FACE_COLORS",
+    "TOOLBAR_QSS",
     "KpiCard",
     "build_cyberpunk_qss",
+    "configure_matplotlib_fonts",
+    "font_stack",
     "make_kpi_card",
+    "mono_font_family",
+    "set_application_font",
     "style_dark_figure",
-    "TOOLBAR_QSS",
+    "ui_font_family",
 ]
 
 # -- palette -------------------------------------------------------------------
@@ -92,10 +100,111 @@ GREEN = "#00e676"
 AMBER = "#ffab00"
 RED = "#ff5252"
 
-FONT_STACK = (
-    "'JetBrains Mono', 'Space Grotesk', 'Segoe UI', 'DejaVu Sans', "
-    "monospace, sans-serif"
+# Installed-font resolution: Qt on macOS scans CoreText and warns
+# ("Replace uses of missing font family 'Monospace' ...") on every
+# polish whenever QSS or QFont references an uninstalled family, so
+# every stylesheet must use *resolved, existing* family names only.
+_MONO_CANDIDATES = (
+    "JetBrains Mono", "Menlo", "Consolas", "DejaVu Sans Mono",
+    "Courier New", "Monaco",
 )
+_UI_CANDIDATES = (
+    "JetBrains Mono", "Space Grotesk", "Segoe UI", "Helvetica Neue",
+    "DejaVu Sans", "Arial",
+)
+_PLATFORM_MONO = {"darwin": "Menlo", "win32": "Consolas"}
+_PLATFORM_UI = {
+    "darwin": "Helvetica Neue", "win32": "Segoe UI", "linux": "DejaVu Sans",
+}
+
+
+def _installed_families() -> set[str] | None:
+    """Families known to Qt right now, or ``None`` when unavailable."""
+    if QApplication.instance() is None:
+        return None
+    try:
+        from PySide6.QtGui import QFontDatabase
+
+        families = set(QFontDatabase.families())
+        return families or None
+    except Exception:  # noqa: BLE001 - font DB must never crash the UI
+        return None
+
+
+def _resolve_family(candidates: tuple[str, ...], fallback: str) -> str:
+    """First installed family among *candidates*, else *fallback*."""
+    families = _installed_families()
+    if families is not None:
+        for name in candidates:
+            if name in families:
+                return name
+    return fallback
+
+
+def mono_font_family() -> str:
+    """An installed monospace family (never a bare ``monospace`` token)."""
+    families = _installed_families()
+    if families is None:
+        return _PLATFORM_MONO.get(sys.platform, "DejaVu Sans Mono")
+    try:
+        from PySide6.QtGui import QFontDatabase
+
+        fixed = QFontDatabase.systemFont(
+            QFontDatabase.SystemFont.FixedFont
+        ).family()
+    except Exception:  # noqa: BLE001
+        fixed = ""
+    if fixed and fixed in families:
+        return fixed
+    return _resolve_family(
+        _MONO_CANDIDATES, _PLATFORM_MONO.get(sys.platform, "DejaVu Sans Mono")
+    )
+
+
+def ui_font_family() -> str:
+    """An installed proportional UI family for QSS ``font-family``."""
+    return _resolve_family(
+        _UI_CANDIDATES, _PLATFORM_UI.get(sys.platform, "DejaVu Sans")
+    )
+
+
+def font_stack() -> str:
+    """QSS font stack of resolved, installed families (no generics)."""
+    return f"'{ui_font_family()}', '{mono_font_family()}'"
+
+
+def set_application_font(app: QApplication | None = None) -> None:
+    """Pin the application font to a resolved, installed family.
+
+    Qt's offscreen/macOS default application font resolves through the
+    missing ``Sans Serif`` alias, which logs a ``qt.qpa.fonts`` warning
+    the first time a widget or Matplotlib canvas queries its metrics.
+    Pinning a concrete family up front keeps the console warning-free.
+    """
+    app = app or QApplication.instance()
+    if app is None:
+        return
+    # Fonts must never crash the UI; Qt font APIs raise at worst
+    # RuntimeError/TypeError on a torn-down application.
+    with contextlib.suppress(RuntimeError, TypeError):
+        font = app.font()
+        font.setFamily(ui_font_family())
+        app.setFont(font)
+
+
+def configure_matplotlib_fonts() -> None:
+    """Point Matplotlib at safe existing families (no bare monospace).
+
+    ``DejaVu Sans Mono`` ships with Matplotlib itself, so it is kept as
+    the guaranteed last entry of ``font.monospace``.
+    """
+    import matplotlib as mpl
+
+    mono = mono_font_family()
+    families = [f for f in (mono, "DejaVu Sans Mono") if f]
+    if families[-1] != "DejaVu Sans Mono":
+        families.append("DejaVu Sans Mono")
+    mpl.rcParams["font.monospace"] = families
 
 # -- neon curve cycle ----------------------------------------------------------
 CURVE_JACKET = {"color": CYAN, "linestyle": "-", "linewidth": 1.8}
@@ -107,7 +216,7 @@ CURVE_CAPS = (
 RING_FACE_COLORS = (PINK, GREEN, AMBER)
 
 
-def build_cyberpunk_qss(colors: Optional[dict] = None) -> str:
+def build_cyberpunk_qss(colors: dict | None = None) -> str:
     """Generate the Cyberpunk Neon QSS with optional color overrides."""
     c = colors or {}
     bg_dark = c.get("bg_dark", BG_DARK)
@@ -134,7 +243,7 @@ def build_cyberpunk_qss(colors: Optional[dict] = None) -> str:
 QWidget {{
     background-color: {bg_dark};
     color: {text_primary};
-    font-family: {FONT_STACK};
+    font-family: {font_stack()};
     font-size: 11px;
     selection-background-color: {purple_accent};
     selection-color: #ffffff;
@@ -547,6 +656,7 @@ QLabel#ratio_badge_bad {{
 # -- Matplotlib dark neon styling -----------------------------------------------
 def style_dark_figure(figure, axes=None) -> None:
     """Apply the dark neon Matplotlib look to a figure and its axes."""
+    configure_matplotlib_fonts()
     figure.patch.set_facecolor(BG_DARK)
     targets = figure.axes if axes is None else axes
     for ax in targets:
@@ -605,7 +715,7 @@ class KpiCard(QFrame):
         initial_value: str = "--",
         unit: str = "",
         accent_color: str = CYAN,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.accent_color = accent_color
@@ -651,7 +761,7 @@ class KpiCard(QFrame):
             color: {TEXT_PRIMARY};
             font-size: 15px;
             font-weight: 800;
-            font-family: {FONT_STACK};
+            font-family: '{mono_font_family()}';
         """)
         self.lbl_unit = QLabel(unit)
         self.lbl_unit.setStyleSheet(f"""
@@ -676,8 +786,8 @@ class KpiCard(QFrame):
     def set_data(
         self,
         value: str,
-        unit: Optional[str] = None,
-        detail: Optional[str] = None,
+        unit: str | None = None,
+        detail: str | None = None,
     ) -> None:
         self.lbl_value.setText(value)
         if unit is not None:
@@ -695,7 +805,7 @@ def make_kpi_card(
     initial_value: str = "--",
     unit: str = "",
     accent_color: str = CYAN,
-    parent: Optional[QWidget] = None,
+    parent: QWidget | None = None,
 ) -> KpiCard:
     """Factory for a neon-bordered KPI readout card."""
     card = KpiCard(

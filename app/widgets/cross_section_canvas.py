@@ -6,13 +6,21 @@ each index the renderer draws:
 
 * the neon cyan jacket annulus (outer radius ``R(z)``, bore ``r(z)``),
 * ``N_cap`` capillaries of ring 1 tangent inside the jacket bore wall,
-* nested rings ``2..N_nested`` tangent inside each host capillary bore,
-  tinted pink (ring 1), green (ring 2), amber (ring 3).
+* nested rings ``2..N_nested`` (exactly ONE tube per azimuth per ring,
+  radially outer-tangent inside the parent bore, matching the MATLAB
+  ``HARF_drawing.mlapp`` schematic), tinted pink (ring 1), green
+  (ring 2), amber (ring 3).
+
+Rendering is memoized on ``(result identity, slider index)`` and the
+raster draw is deferred to ``showEvent`` while the widget is hidden, so
+tab switches with unchanged state cost no Matplotlib rasterization.
 """
 
 from __future__ import annotations
 
-import numpy as np
+import math
+from collections.abc import Sequence
+
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.patches import Circle, Wedge
@@ -32,12 +40,61 @@ from app.theme import (
     RING_FACE_COLORS,
     SURFACE_LOWEST,
     TEXT_MUTED,
+    mono_font_family,
 )
 from src.models import SimulationResult
 
-__all__ = ["CrossSectionCanvas"]
+__all__ = ["CrossSectionCanvas", "compute_capillary_centers"]
 
 _SLIDER_STEPS = 1000
+
+
+def compute_capillary_centers(
+    r: float,
+    Rc: Sequence[float],
+    rc: Sequence[float],
+    n_cap: int,
+) -> list[list[tuple[float, float]]]:
+    """Center positions of the nested capillary rings (``.mlapp`` rule).
+
+    Matches ``HARF_drawing.mlapp`` exactly: for each azimuth
+    ``theta_k = 2*pi*k / n_cap`` (``k = 0..n_cap-1``) exactly ONE
+    capillary per ring is drawn, radially outer-tangent:
+
+    * ring 1 sits inside the jacket bore wall:
+      ``rho_0 = r - Rc[0]``,
+    * ring ``i`` sits inside ring ``i-1``'s bore, along the same
+      azimuth: ``rho_i = rho_{i-1} + rc[i-1] - Rc[i]``.
+
+    Returns one list of ``n_cap`` centers per ring (so a 3-ring
+    6-capillary fiber yields ``[6, 6, 6]`` centers, never
+    ``6 + 36 + 216``).  Rings stop at the first non-nested / invalid
+    geometry (``Rc[i] > rc[i-1]``, non-positive or non-finite radii).
+    """
+    n_rings = min(len(Rc), len(rc))
+    rings: list[list[tuple[float, float]]] = []
+    rho = float(r)
+    host_bore = float(r)
+    for i in range(n_rings):
+        rc_o = float(Rc[i])
+        rc_i = float(rc[i])
+        if not (math.isfinite(rc_o) and math.isfinite(rc_i)):
+            break
+        if rc_o <= 0.0 or rc_i <= 0.0 or rc_o > host_bore:
+            break
+        rho = (float(r) - rc_o) if i == 0 else (
+            rho + float(rc[i - 1]) - rc_o
+        )
+        if not math.isfinite(rho) or rho < 0.0:
+            break
+        rings.append([
+            (rho * math.cos(theta), rho * math.sin(theta))
+            for theta in (
+                2.0 * math.pi * k / n_cap for k in range(int(n_cap))
+            )
+        ])
+        host_bore = rc_i
+    return rings
 
 
 class CrossSectionCanvas(QWidget):
@@ -46,13 +103,20 @@ class CrossSectionCanvas(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._result: SimulationResult | None = None
+        self._result_ref: SimulationResult | None = None
         self._index = 0
+        self._last_state_key: tuple | None = None
+        self._dirty_draw = False
 
         self.figure = Figure(dpi=100)
         self.figure.patch.set_facecolor(BG_DARK)
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.ax = self.figure.add_subplot(111)
         self.ax.set_aspect("equal")
+        # One-time static layout (no tight_layout on every refresh).
+        self.figure.subplots_adjust(
+            left=0.08, right=0.97, top=0.92, bottom=0.06
+        )
 
         self.zmSlider = QSlider(Qt.Horizontal)
         self.zmSlider.setRange(0, _SLIDER_STEPS)
@@ -60,7 +124,7 @@ class CrossSectionCanvas(QWidget):
         self.zmSlider.valueChanged.connect(self._on_slider)
         self.z_label = QLabel("z = -- mm")
         self.z_label.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-family: monospace;"
+            f"color: {TEXT_MUTED}; font-family: '{mono_font_family()}';"
         )
 
         slider_row = QHBoxLayout()
@@ -74,10 +138,27 @@ class CrossSectionCanvas(QWidget):
         layout.addLayout(slider_row)
         self._draw_empty()
 
+    # -- visibility / deferred raster ------------------------------------
+    def showEvent(self, event) -> None:  # (Qt override)
+        """Rasterize pending content when the canvas becomes visible."""
+        super().showEvent(event)
+        if self._dirty_draw:
+            self._dirty_draw = False
+            self.canvas.draw_idle()
+
+    def _finish_render(self) -> None:
+        """Defer the raster draw while hidden (tab-switch lag guard)."""
+        if self.isVisible():
+            self.canvas.draw_idle()
+        else:
+            self._dirty_draw = True
+
     # -- public -----------------------------------------------------------
     def set_result(self, result: SimulationResult | None) -> None:
         """Install a new result and reset the slider to ``z = 0``."""
         self._result = result
+        self._result_ref = result
+        self._last_state_key = None
         if result is None or len(result.z) < 2 or result.z_end <= 0.0:
             self.zmSlider.setEnabled(False)
             self.zmSlider.setValue(0)
@@ -103,6 +184,10 @@ class CrossSectionCanvas(QWidget):
 
     # -- drawing ------------------------------------------------------------
     def _draw_empty(self) -> None:
+        if self._last_state_key == ("empty",):
+            self._finish_render()
+            return
+        self._last_state_key = ("empty",)
         self.ax.clear()
         self.ax.text(
             0.5, 0.5, "Run a computation to scrub the cross-section",
@@ -112,8 +197,7 @@ class CrossSectionCanvas(QWidget):
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self._style_axes()
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._finish_render()
 
     def _style_axes(self) -> None:
         self.figure.patch.set_facecolor(BG_DARK)
@@ -127,6 +211,12 @@ class CrossSectionCanvas(QWidget):
         if result is None:
             self._draw_empty()
             return
+        # Memoized render signature: unchanged (result, index) -> no-op.
+        key = (id(self._result_ref), self._index)
+        if key == self._last_state_key:
+            self._finish_render()
+            return
+        self._last_state_key = key
         idx = self._index
         z_mm = float(result.z[idx]) * 1e3
         self.z_label.setText(f"z = {z_mm:.2f} mm")
@@ -154,35 +244,26 @@ class CrossSectionCanvas(QWidget):
             )
         )
 
-        # Ring 1: N_cap capillaries tangent inside the jacket bore wall.
-        centers = [(0.0, 0.0)]
-        host_radius = r
-        for i, (rc_o, rc_i) in enumerate(zip(rings_o, rings_i, strict=True)):
-            if rc_o <= 0.0 or rc_i <= 0.0 or rc_o > host_radius:
-                break
+        # Nested rings: exactly one capillary per azimuth per ring
+        # (MATLAB HARF_drawing.mlapp schematic geometry).
+        ring_centers = compute_capillary_centers(r, rings_o, rings_i, n_cap)
+        for i, centers_i in enumerate(ring_centers):
             neon = RING_FACE_COLORS[i % len(RING_FACE_COLORS)]
-            new_centers = []
-            for cx, cy in centers:
-                offset = host_radius - rc_o
-                for k in range(n_cap):
-                    theta = 2.0 * np.pi * (k + 0.5 * (i > 0)) / n_cap
-                    ccx = cx + offset * np.cos(theta)
-                    ccy = cy + offset * np.sin(theta)
-                    self.ax.add_patch(
-                        Circle(
-                            (ccx, ccy), rc_o, facecolor=neon,
-                            edgecolor=neon, lw=1.2, alpha=0.85,
-                        )
+            rc_o = rings_o[i]
+            rc_i = rings_i[i]
+            for cx, cy in centers_i:
+                self.ax.add_patch(
+                    Circle(
+                        (cx, cy), rc_o, facecolor=neon,
+                        edgecolor=neon, lw=1.2, alpha=0.85,
                     )
-                    self.ax.add_patch(
-                        Circle(
-                            (ccx, ccy), rc_i, facecolor=SURFACE_LOWEST,
-                            edgecolor=neon, lw=0.9,
-                        )
+                )
+                self.ax.add_patch(
+                    Circle(
+                        (cx, cy), rc_i, facecolor=SURFACE_LOWEST,
+                        edgecolor=neon, lw=0.9,
                     )
-                    new_centers.append((ccx, ccy))
-            centers = new_centers
-            host_radius = rc_i
+                )
 
         limit = max(R, r) * 1.15
         self.ax.set_xlim(-limit, limit)
@@ -191,8 +272,7 @@ class CrossSectionCanvas(QWidget):
         self.ax.set_yticks([])
         self.ax.set_title(
             f"Cross-section at z = {z_mm:.2f} mm "
-            f"({n_cap} capillaries, {len(rings_o)} nested ring(s))"
+            f"({n_cap} capillaries, {len(ring_centers)} nested ring(s))"
         )
         self._style_axes()
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._finish_render()

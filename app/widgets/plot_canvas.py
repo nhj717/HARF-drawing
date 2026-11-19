@@ -29,6 +29,7 @@ from app.theme import (
     CURVE_JACKET,
     TEXT_MUTED,
     TOOLBAR_QSS,
+    mono_font_family,
     style_dark_figure,
 )
 from src.expressions import CompiledExpression, ExpressionError
@@ -36,10 +37,10 @@ from src.models import SimulationResult
 
 __all__ = [
     "AXIAL_VIEWS",
-    "PlotCanvas",
     "SCHEMATIC_VIEW",
     "TEMPERATURE_VIEW",
     "TENSION_VIEW",
+    "PlotCanvas",
 ]
 
 SCHEMATIC_VIEW = "Schematic (cross-section)"
@@ -47,7 +48,7 @@ TEMPERATURE_VIEW = "Temperature (°C)"
 TENSION_VIEW = "Draw tension (g)"
 
 AXIAL_VIEWS: tuple[str, ...] = (
-    "Velocity V (mm/min)",
+    "Velocity V (m/min)",
     "Jacket diameter D (mm)",
     "Jacket bore diameter d (mm)",
     "Capillary 1 outer Dc (um)",
@@ -86,7 +87,7 @@ class PlotCanvas(QWidget):
         self.cursor_label = QLabel("x = --, y = --")
         self.cursor_label.setAlignment(Qt.AlignRight)
         self.cursor_label.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-family: monospace;"
+            f"color: {TEXT_MUTED}; font-family: '{mono_font_family()}';"
         )
 
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -99,7 +100,51 @@ class PlotCanvas(QWidget):
         layout.addWidget(self.canvas, 1)
         layout.addWidget(self.cursor_label, 0)
         self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+        # One-time static layout (no tight_layout on every refresh) plus
+        # render memoization / deferred rasterization for fast tab
+        # switches with unchanged state.
+        self.figure.subplots_adjust(
+            left=0.11, right=0.97, top=0.91, bottom=0.10
+        )
+        self._last_plot_key: tuple | None = None
+        self._last_result: SimulationResult | None = None
+        self._dirty_draw = False
         self.clear("No data yet — run a computation.")
+
+    # -- visibility / deferred raster --------------------------------------
+    def showEvent(self, event) -> None:  # (Qt override)
+        """Rasterize pending content when the canvas becomes visible."""
+        super().showEvent(event)
+        if self._dirty_draw:
+            self._dirty_draw = False
+            self.canvas.draw_idle()
+
+    def _finish_render(self) -> None:
+        """Defer the raster draw while hidden (tab-switch lag guard)."""
+        if self.isVisible():
+            self.canvas.draw_idle()
+        else:
+            self._dirty_draw = True
+
+    def _commit_render(self, key: tuple) -> None:
+        """Mark the rendered state and schedule the (deferred) draw."""
+        self._last_plot_key = key
+        self._finish_render()
+
+    @staticmethod
+    def _curves_key(x, curves, *extra) -> tuple:
+        """Exact render signature of a curves request (bytes-based)."""
+        parts: list = [tuple(str(e) for e in extra)]
+        if x is None or len(x) == 0:
+            parts.append(None)
+        else:
+            parts.append(np.asarray(x, dtype=float).tobytes())
+        for y, label in curves:
+            if y is None or len(y) == 0:
+                parts.append((label, None))
+            else:
+                parts.append((label, np.asarray(y, dtype=float).tobytes()))
+        return tuple(parts)
 
     # -- cursor ---------------------------------------------------------
     def _on_motion(self, event) -> None:
@@ -116,6 +161,10 @@ class PlotCanvas(QWidget):
 
     # -- generic drawing --------------------------------------------------
     def clear(self, message: str = "") -> None:
+        key = ("clear", message)
+        if self._last_plot_key == key:
+            self._finish_render()
+            return
         self.ax.clear()
         if message:
             self.ax.text(
@@ -131,7 +180,7 @@ class PlotCanvas(QWidget):
             self.ax.set_xticks([])
             self.ax.set_yticks([])
         self._apply_theme()
-        self.canvas.draw_idle()
+        self._commit_render(key)
 
     def plot_curves(
         self,
@@ -144,6 +193,10 @@ class PlotCanvas(QWidget):
         styles: list[dict] | None = None,
     ) -> None:
         """Plot ``curves = [(y, label), ...]`` against ``x``."""
+        key = self._curves_key(x, curves, xlabel, ylabel, log_y, title)
+        if self._last_plot_key == key:
+            self._finish_render()
+            return
         self.ax.clear()
         if x is None or len(x) == 0:
             self.clear("No data available for this view.")
@@ -167,8 +220,7 @@ class PlotCanvas(QWidget):
         if len(curves) > 1:
             self.ax.legend(fontsize=8)
         self._apply_theme()
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._commit_render(key)
 
     def plot_property(
         self,
@@ -198,6 +250,13 @@ class PlotCanvas(QWidget):
         and ``Surface tension``; the other properties plot the single
         Jacket curve.  X ticks follow MATLAB v1.5: 250 K steps.
         """
+        key = (
+            "material", prop_name, str(jacket_expr),
+            tuple(str(e) for e in cap_exprs), int(nb_nested), log_y,
+        )
+        if self._last_plot_key == key:
+            self._finish_render()
+            return
         ylabel, auto_log = _PROPERTY_YLABELS[prop_name]
         if log_y is None:
             log_y = auto_log
@@ -242,8 +301,7 @@ class PlotCanvas(QWidget):
         self.ax.set_xticks(np.arange(_T_MIN_K, _T_MAX_K + 1.0, 250.0))
         self.ax.set_xlim(_T_MIN_K, _T_MAX_K)
         self._apply_theme()
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._commit_render(key)
 
     # -- furnace profiles ---------------------------------------------------
     def plot_furnace_profile(
@@ -255,6 +313,10 @@ class PlotCanvas(QWidget):
         and a 5% head-room on ``ylim`` so constant ``'1'`` profiles do
         not touch the top spine.
         """
+        key = self._curves_key(z_m, [(profile, "T/Tmax")], t_max_c)
+        if self._last_plot_key == key:
+            self._finish_render()
+            return
         self.ax.clear()
         self.ax.plot(
             z_m, profile, label="T/Tmax", color=CURVE_JACKET["color"]
@@ -270,8 +332,7 @@ class PlotCanvas(QWidget):
         self.ax.set_ylim(0.0, y_top)
         self.ax.legend(fontsize=8)
         self._apply_theme()
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._commit_render(key)
 
     def plot_initial_furnace_temperature(
         self,
@@ -301,9 +362,17 @@ class PlotCanvas(QWidget):
         if not np.isfinite(temp).any():
             self.clear("Furnace profile yields no finite temperatures.")
             return False
+        curves = [(temp, "Furnace profile")]
+        key = self._curves_key(
+            z_grid, curves, "z (m)", "T (°C)", False,
+            "Furnace temperature profile", Lfour,
+        )
+        if self._last_plot_key == key:
+            self._finish_render()
+            return True
         self.plot_curves(
             z_grid,
-            [(temp, "Furnace profile")],
+            curves,
             "z (m)",
             "T (°C)",
             title="Furnace temperature profile",
@@ -315,8 +384,7 @@ class PlotCanvas(QWidget):
         )
         self.ax.legend(fontsize=8)
         self._apply_theme()
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._commit_render(key)
         return True
 
     # -- axial draw views -------------------------------------------------
@@ -325,6 +393,11 @@ class PlotCanvas(QWidget):
         if result is None:
             self.clear("No data yet — run a computation.")
             return
+        key = ("axial", id(result), view)
+        if self._last_plot_key == key:
+            self._finish_render()
+            return
+        self._last_result = result  # pins the id() used in the key
         z_mm = np.asarray(result.z, dtype=float) * 1e3
         if len(z_mm) < 2 or result.z_end <= 0.0:
             self.clear(
@@ -343,8 +416,8 @@ class PlotCanvas(QWidget):
 
         if view.startswith("Velocity"):
             self.plot_curves(
-                z_mm, [(result.w * 60.0 * 1e3, "w(z)")],
-                "z (mm)", "w (mm/min)", title=view,
+                z_mm, [(result.w * 60.0, "w(z)")],
+                "z (mm)", "w (m/min)", title=view,
                 styles=[dict(CURVE_JACKET)],
             )
         elif view.startswith("Jacket diameter"):
@@ -446,7 +519,7 @@ class PlotCanvas(QWidget):
             )
         self.ax.legend(fontsize=8)
         self._apply_theme()
-        self.canvas.draw_idle()
+        self._commit_render(key)
 
     def _add_end_value_legend(self, result: SimulationResult) -> None:
         """Append MATLAB-style end-value legend entries (Vf, Df, ...)."""
@@ -454,7 +527,7 @@ class PlotCanvas(QWidget):
             return
         g = float(getattr(result.inputs, "g", 9.81))
         labels = [
-            f"Vf = {result.w[-1] * 60.0 * 1e3:.2f} m/min",
+            f"Vf = {result.w[-1] * 60.0:.2f} m/min",
             f"Df = {2.0 * result.R[-1] * 1e6:.2f} µm",
             f"df = {2.0 * result.r[-1] * 1e6:.2f} µm",
         ]

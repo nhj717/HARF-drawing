@@ -30,7 +30,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.theme import RED, SURFACE_LOWEST, TEXT_MUTED, make_kpi_card
+from app.theme import (
+    RED,
+    SURFACE_LOWEST,
+    TEXT_MUTED,
+    make_kpi_card,
+    mono_font_family,
+)
 from app.widgets.cross_section_canvas import CrossSectionCanvas
 from app.widgets.plot_canvas import (
     AXIAL_VIEWS,
@@ -60,6 +66,7 @@ from src.models import (
     SimulationInputs,
     TargetError,
     compute_derived_targets,
+    m_per_s_to_m_per_min,
     mbar_to_pa,
     r_contact_radius,
     um_to_m,
@@ -143,7 +150,7 @@ class OptimizationTab(QWidget):
             bform.addRow(self.pcapMaxLabels[i], self.pcapMaxEdits[i])
 
         # -- live derived-target KPI preview --------------------------------
-        self.kpiVf = make_kpi_card("Vf", unit="mm/min")
+        self.kpiVf = make_kpi_card("Vf", unit="m/min")
         self.kpiDf = make_kpi_card("Df", unit="um")
         kpi_row = QHBoxLayout()
         kpi_row.addWidget(self.kpiVf)
@@ -183,7 +190,7 @@ class OptimizationTab(QWidget):
         self.preview_label = QLabel("")
         self.preview_label.setWordWrap(True)
         self.preview_label.setStyleSheet(
-            f"color: {TEXT_MUTED}; font-family: monospace;"
+            f"color: {TEXT_MUTED}; font-family: '{mono_font_family()}';"
         )
         preview_box = QGroupBox("Derived targets (live preview)")
         pv = QVBoxLayout(preview_box)
@@ -218,12 +225,18 @@ class OptimizationTab(QWidget):
             QLabel(f"Pcap{i + 1} = --") for i in range(MAX_NESTED_RINGS)
         ]
         self.solvedCostLabel = QLabel("Cost = --")
+        self.solvedMaxContactBadge = RatioBadge(
+            "max Rc1/Rcontact",
+            "Maximum axial Rc1/Rcontact of the optimized run "
+            "(red when the capillaries touch or overlap).",
+        )
         solved_form = QFormLayout(solved_box)
         solved_form.addRow(self.solvedTmaxLabel)
         solved_form.addRow(self.solvedPcoreLabel)
         for label in self.solvedPcapLabels:
             solved_form.addRow(label)
         solved_form.addRow(self.solvedCostLabel)
+        solved_form.addRow(self.solvedMaxContactBadge)
 
         self.applyButton = QPushButton("Apply to Direct Computation")
         self.applyButton.setObjectName("btn_accent")
@@ -327,12 +340,14 @@ class OptimizationTab(QWidget):
     def _render_targets(
         self, targets: DerivedTargets, inputs: SimulationInputs
     ) -> None:
-        self.kpiVf.set_data(f"{targets.wf * 60.0 * 1e3:.4g}", "mm/min")
+        self.kpiVf.set_data(
+            f"{m_per_s_to_m_per_min(targets.wf):.4g}", "m/min"
+        )
         self.kpiDf.set_data(f"{2.0 * targets.Rf * 1e6:.4g}", "um")
         self.boreRatioBadge.set_ratio(2.0 * targets.rf, 2.0 * targets.Rf)
         self.capRatioBadge.set_ratio(2.0 * targets.rcf, 2.0 * targets.Rcf)
         self.contactBadge.set_ratio(
-            targets.Rcf, r_contact_radius(inputs.r0, inputs.n_capillaries)
+            targets.Rcf, r_contact_radius(targets.rf, inputs.n_capillaries)
         )
         for j, badge in enumerate(self.nestedBadges):
             index = j + 1  # ring j+2 vs ring j+1
@@ -356,8 +371,10 @@ class OptimizationTab(QWidget):
     @staticmethod
     def _format_targets(t: DerivedTargets) -> str:
         lines = [
-            f"wf = {t.wf * 60.0 * 1e3:.4g} mm/min, "
-            f"rf = {t.rf * 1e6:.4g} um, Rf = {t.Rf * 1e6:.4g} um",
+            (
+                f"wf = {m_per_s_to_m_per_min(t.wf):.4g} m/min, "
+                f"rf = {t.rf * 1e6:.4g} um, Rf = {t.Rf * 1e6:.4g} um"
+            ),
         ]
         for i, (rcf_o, rcf_i) in enumerate(t.ring_targets, start=1):
             lines.append(
@@ -461,6 +478,14 @@ class OptimizationTab(QWidget):
                 label.setText(f"Pcap{i + 1} = --")
         cost = "n/a" if result.cost is None else f"{result.cost:.3e}"
         self.solvedCostLabel.setText(f"Cost = {cost}")
+        max_ratio = (
+            result.result.max_rc1_over_rcontact
+            if result.ok and result.result is not None else None
+        )
+        if max_ratio is not None:
+            self.solvedMaxContactBadge.set_ratio(max_ratio, 1.0)
+        else:
+            self.solvedMaxContactBadge.reset()
         if result.ok:
             self.warn_banner.hide()
             self.applyButton.setEnabled(True)

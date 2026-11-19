@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.theme import RED, SURFACE_LOWEST, make_kpi_card
+from app.theme import RED, SURFACE_LOWEST, TEXT_MUTED, TEXT_PRIMARY, mono_font_family
 from app.widgets.cross_section_canvas import CrossSectionCanvas
 from app.widgets.plot_canvas import (
     AXIAL_VIEWS,
@@ -53,6 +54,40 @@ from src.models import (
 )
 
 __all__ = ["DirectTab"]
+
+
+class _ValueReadout(QLabel):
+    """Compact monospaced value cell of the final-outputs table.
+
+    Mirrors the lightweight ``set_data`` / ``value_text`` / ``reset``
+    accessors of :class:`~app.theme.KpiCard` so callers and tests stay
+    ergonomic, without the wide neon-card chrome.
+    """
+
+    def __init__(self, unit: str = "", parent=None) -> None:
+        super().__init__("\u2014", parent)
+        self.unit = unit
+        self._value_text = "--"
+        self.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-weight: 700; "
+            f"font-family: '{mono_font_family()}';"
+        )
+
+    def set_data(self, value: str, unit: str | None = None) -> None:
+        self._value_text = str(value)
+        if unit is not None:
+            self.unit = unit
+        self.setText(self._value_text)
+
+    def value_text(self) -> str:
+        """Current numeric readout text (``--`` before any run)."""
+        return self._value_text
+
+    def reset(self) -> None:
+        """Pre-run placeholder state."""
+        self._value_text = "--"
+        self.setText("\u2014")
 
 
 class DirectTab(QWidget):
@@ -191,15 +226,21 @@ class DirectTab(QWidget):
         self._on_view_changed(self.viewCombo.currentText())
 
     def _build_final_output_panel(self) -> QGroupBox:
-        """Neon KPI cards + badges for the final fiber geometry."""
+        """Compact solved-parameters-style table for the final fiber.
+
+        Always visible (``--`` placeholders pre-run): a 2-column grid
+        of labeled value rows plus a 2-column badge summary, matching
+        the ``Solved parameters`` aesthetic of the Optimization tab —
+        no horizontal sprawl, no scrolling required at 1280x800.
+        """
         box = QGroupBox("Final fiber outputs")
-        self.kpiVf = make_kpi_card("Vf", unit="mm/min")
-        self.kpiDf = make_kpi_card("Df", unit="um")
-        self.kpiDfBore = make_kpi_card("df", unit="um")
-        self.kpiDcore = make_kpi_card("Dcore", unit="um")
-        self.kpiDcf = make_kpi_card("Dcf1", unit="um")
-        self.kpiDcfBore = make_kpi_card("dcf1", unit="um")
-        self.kpiTf = make_kpi_card("tf1", unit="um")
+        self.kpiVf = _ValueReadout("m/min")
+        self.kpiDf = _ValueReadout("um")
+        self.kpiDfBore = _ValueReadout("um")
+        self.kpiDcore = _ValueReadout("um")
+        self.kpiDcf = _ValueReadout("um")
+        self.kpiDcfBore = _ValueReadout("um")
+        self.kpiTf = _ValueReadout("um")
         self.finalContactBadge = RatioBadge(
             "Rcf1 / Rcontact",
             "Final ring-1 outer radius over the packing contact radius "
@@ -212,21 +253,29 @@ class DirectTab(QWidget):
             )
             for i in range(3)
         ]
-        cards = QHBoxLayout()
-        for card in (
-            self.kpiVf, self.kpiDf, self.kpiDfBore, self.kpiDcore,
-            self.kpiDcf, self.kpiDcfBore, self.kpiTf,
-        ):
-            cards.addWidget(card)
-        badges = QHBoxLayout()
-        badges.addWidget(self.finalContactBadge)
-        for badge in self.ringRatioBadges:
-            badges.addWidget(badge)
-        badges.addStretch(1)
-        inner = QVBoxLayout(box)
-        inner.addLayout(cards)
-        inner.addLayout(badges)
-        box.hide()
+        rows = (
+            ("Vf", self.kpiVf), ("Df", self.kpiDf),
+            ("df", self.kpiDfBore), ("Dcore", self.kpiDcore),
+            ("Dcf1", self.kpiDcf), ("dcf1", self.kpiDcfBore),
+            ("tf1", self.kpiTf),
+        )
+        badges = (self.finalContactBadge,) + tuple(self.ringRatioBadges)
+        grid = QGridLayout(box)
+        grid.setContentsMargins(8, 4, 8, 6)
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(2)
+        for i, (name, readout) in enumerate(rows):
+            row, col = divmod(i, 2)
+            label = QLabel(f"{name} [{readout.unit}]")
+            label.setStyleSheet(f"color: {TEXT_MUTED};")
+            grid.addWidget(label, row, 2 * col, Qt.AlignVCenter)
+            grid.addWidget(readout, row, 2 * col + 1)
+        badge_start = (len(rows) + 1) // 2
+        for i, badge in enumerate(badges):
+            row, col = divmod(i, 2)
+            grid.addWidget(badge, badge_start + row, 2 * col, 1, 2)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
         return box
 
     # -- dynamic state --------------------------------------------------------
@@ -342,9 +391,9 @@ class DirectTab(QWidget):
                     continue
             badge.set_ratio(float("nan"), 1.0)
 
-    # -- final-fiber KPI readouts --------------------------------------------
+    # -- final-fiber readouts --------------------------------------------
     def _render_final_outputs(self, result: SimulationResult | None) -> None:
-        """Fill (or clear) the post-run KPI cards and ratio badges."""
+        """Fill (or reset) the post-run value table and ratio badges."""
         cards = (
             self.kpiVf, self.kpiDf, self.kpiDfBore, self.kpiDcore,
             self.kpiDcf, self.kpiDcfBore, self.kpiTf,
@@ -353,37 +402,37 @@ class DirectTab(QWidget):
             result is None or not result.ok
             or len(result.z) == 0 or len(result.w) == 0
         ):
-            self.finalOutputBox.hide()
             for card in cards:
-                card.set_data("--", "")
-            self.finalContactBadge.set_ratio(float("nan"), 1.0)
+                card.reset()
+            self.finalContactBadge.reset()
             for badge in self.ringRatioBadges:
-                badge.set_ratio(float("nan"), 1.0)
+                badge.reset()
             return
-        self.finalOutputBox.show()
-        self.kpiVf.set_data(f"{result.w[-1] * 60.0 * 1e3:.4g}", "mm/min")
-        self.kpiDf.set_data(f"{2.0 * result.R[-1] * 1e6:.4g}", "um")
-        self.kpiDfBore.set_data(f"{2.0 * result.r[-1] * 1e6:.4g}", "um")
-        self.kpiDcore.set_data(f"{result.D_core[-1] * 1e6:.4g}", "um")
+        self.kpiVf.set_data(f"{result.w[-1] * 60.0:.4g}")
+        self.kpiDf.set_data(f"{2.0 * result.R[-1] * 1e6:.4g}")
+        self.kpiDfBore.set_data(f"{2.0 * result.r[-1] * 1e6:.4g}")
+        self.kpiDcore.set_data(f"{result.D_core[-1] * 1e6:.4g}")
         if result.Rc and len(result.Rc[0]):
             self.kpiDcf.set_data(
-                f"{2.0 * result.Rc[0][-1] * 1e6:.4g}", "um"
+                f"{2.0 * result.Rc[0][-1] * 1e6:.4g}"
             )
         if result.rc and len(result.rc[0]):
             self.kpiDcfBore.set_data(
-                f"{2.0 * result.rc[0][-1] * 1e6:.4g}", "um"
+                f"{2.0 * result.rc[0][-1] * 1e6:.4g}"
             )
         if (
             result.Rc and result.rc
             and len(result.Rc[0]) and len(result.rc[0])
         ):
             self.kpiTf.set_data(
-                f"{(result.Rc[0][-1] - result.rc[0][-1]) * 1e6:.4g}", "um"
+                f"{(result.Rc[0][-1] - result.rc[0][-1]) * 1e6:.4g}"
             )
         if result.Rc and len(result.Rc[0]) and len(result.R_contact):
             self.finalContactBadge.set_ratio(
                 float(result.Rc[0][-1]), float(result.R_contact[-1])
             )
+        else:
+            self.finalContactBadge.reset()
         for i, badge in enumerate(self.ringRatioBadges):
             if (
                 i < len(result.Rc) and i < len(result.rc)
@@ -394,7 +443,7 @@ class DirectTab(QWidget):
                     2.0 * float(result.Rc[i][-1]),
                 )
             else:
-                badge.set_ratio(float("nan"), 1.0)
+                badge.reset()
 
     # -- views -------------------------------------------------------------------
     def _on_view_changed(self, view: str) -> None:

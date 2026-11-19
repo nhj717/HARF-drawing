@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import math
 from collections.abc import Sequence
+from functools import lru_cache
 
 import numpy as np
 
@@ -196,6 +197,23 @@ def _validate_node(node: ast.AST, variables: frozenset[str]) -> None:
         )
 
 
+@lru_cache(maxsize=256)
+def _compile_cached(
+    normalized: str, variables: tuple[str, ...]
+) -> tuple:
+    """Parse + validate + build the scalar/vector evaluators (cached).
+
+    Repeated UI refreshes with unchanged expression strings hit the
+    cache and do zero AST re-parsing; raised :class:`ExpressionError`
+    or :class:`SyntaxError` values are never cached.
+    """
+    tree = ast.parse(normalized, mode="eval")
+    _validate_node(tree.body, frozenset(variables))
+    scalar = _build_function(tree, variables, _SCALAR_NAMESPACE)
+    vector = _build_function(tree, variables, _VECTOR_NAMESPACE)
+    return scalar, vector
+
+
 def _build_function(
     tree: ast.Expression, variables: Sequence[str], namespace: dict
 ):
@@ -244,16 +262,13 @@ class CompiledExpression:
             raise ExpressionError("at least one variable is required")
         self.normalized = normalize_matlab(self.source)
         try:
-            tree = ast.parse(self.normalized, mode="eval")
+            self._scalar_fn, self._vector_fn = _compile_cached(
+                self.normalized, self.variables
+            )
         except SyntaxError as exc:
             raise ExpressionError(
                 f"syntax error in expression {self.source!r}: {exc.msg}"
             ) from exc
-        _validate_node(tree.body, frozenset(self.variables))
-        self._scalar_fn = _build_function(tree, self.variables,
-                                           _SCALAR_NAMESPACE)
-        self._vector_fn = _build_function(tree, self.variables,
-                                           _VECTOR_NAMESPACE)
 
     # -- evaluation -----------------------------------------------------
     def scalar(self, *values: float) -> float:

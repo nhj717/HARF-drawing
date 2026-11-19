@@ -48,6 +48,7 @@ __all__ = [
     "default_optimization_inputs",
     "default_simulation_inputs",
     "grams_to_newtons",
+    "m_per_s_to_m_per_min",
     "mbar_to_pa",
     "mm_per_min_to_m_per_s",
     "mm_to_m",
@@ -83,6 +84,19 @@ def grams_to_newtons(x: float) -> float:
 def mm_per_min_to_m_per_s(x: float) -> float:
     """Millimetres per minute to metres per second."""
     return float(x) * 1e-3 / 60.0
+
+
+def m_per_s_to_m_per_min(v_m_s: float | np.ndarray) -> float | np.ndarray:
+    """Metres per second to metres per minute (MATLAB ``V = w * 60``).
+
+    The inverse display direction of :func:`mm_per_min_to_m_per_s`
+    restricted to the draw velocity readouts: ``Vf`` legends, KPI cards
+    and plots all display ``w * 60`` in ``m/min`` (the feed speed
+    ``w0`` alone keeps its GUI ``mm/min`` convention).
+    """
+    if isinstance(v_m_s, np.ndarray):
+        return np.asarray(v_m_s, dtype=float) * 60.0
+    return float(v_m_s) * 60.0
 
 
 def celsius_to_kelvin(x: float) -> float:
@@ -482,8 +496,10 @@ _STATUS_HELP: dict[SimulationStatus, tuple[str, str]] = {
         ),
     ),
     SimulationStatus.JACKET_COLLAPSE: (
-        "The jacket bore collapsed (bore flux r^2 w fell below 10% of "
-        "its initial value).",
+        (
+            "The jacket bore collapsed (bore flux r^2 w fell below 10% of "
+            "its initial value)."
+        ),
         (
             "Increase the core pressure Pcore or reduce the furnace "
             "temperature so surface tension cannot close the jacket."
@@ -622,6 +638,27 @@ class SimulationResult:
     def R_contact(self) -> np.ndarray:
         """Contact radius of the capillary packing along z [m]."""
         return r_contact_radius(self.r, self.inputs.n_capillaries)
+
+    @property
+    def max_rc1_over_rcontact(self) -> float | None:
+        """Point-wise axial maximum of ``Rc1(z) / Rcontact(z)``.
+
+        Returns ``None`` when no ring-1 trajectory or contact radius is
+        available (or the contact radius is not strictly positive);
+        matching MATLAB ``max(app.result.Rc./app.result.rcontact)``.
+        """
+        if not self.Rc or len(self.Rc[0]) == 0 or len(self.r) == 0:
+            return None
+        rc1 = np.asarray(self.Rc[0], dtype=float)
+        contact = np.asarray(self.R_contact, dtype=float)
+        if contact.size != rc1.size or contact.size == 0:
+            return None
+        if not np.all(np.isfinite(contact)) or not np.all(contact > 0.0):
+            return None
+        ratio = rc1 / contact
+        if not np.isfinite(ratio).any():
+            return None
+        return float(np.nanmax(ratio))
 
     @property
     def D_core(self) -> np.ndarray:
