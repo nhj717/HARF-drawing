@@ -1,6 +1,6 @@
-"""Main workstation window: 5-tab layout, menu/toolbar, config I/O.
+"""Main workstation window: 6-tab layout, menu/toolbar, config I/O.
 
-``MainWindow`` wires the five tabs together, owns the worker lifecycle
+``MainWindow`` wires the six tabs together, owns the worker lifecycle
 (asynchronous runs with cooperative cancellation and a graceful
 ``closeEvent`` shutdown), and provides **Load Config** / **Save Config**
 (``.json``) and **Reset Defaults** actions.  When a ``config_path`` is
@@ -27,6 +27,7 @@ from app.tabs.tab_direct import DirectTab
 from app.tabs.tab_jacket import JacketTab
 from app.tabs.tab_optimization import OptimizationTab
 from app.tabs.tab_parameters import ParameterTab
+from app.tabs.tab_scaling import ScalingTab
 from app.theme import build_cyberpunk_qss, set_application_font
 from app.workers import OptimizationWorker, SimulationWorker
 from src.io_utils import (
@@ -40,6 +41,7 @@ from src.models import (
     default_optimization_inputs,
     default_simulation_inputs,
 )
+from src.scaling import solver_inputs_to_scaling
 
 __all__ = ["MainWindow"]
 
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self.capillaries_tab = CapillariesTab()
         self.direct_tab = DirectTab()
         self.optimization_tab = OptimizationTab()
+        self.scaling_tab = ScalingTab()
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.parameter_tab, "Parameters")
@@ -78,6 +81,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.capillaries_tab, "Capillaries")
         self.tabs.addTab(self.direct_tab, "Direct computation")
         self.tabs.addTab(self.optimization_tab, "Optimization")
+        self.tabs.addTab(self.scaling_tab, "Cane & Stack")
         self.setCentralWidget(self.tabs)
 
         self._direct_worker: SimulationWorker | None = None
@@ -166,6 +170,8 @@ class MainWindow(QMainWindow):
         self.optimization_tab.run_requested.connect(self.run_optimization)
         self.optimization_tab.apply_requested.connect(self._on_apply_solution)
         self.optimization_tab.set_inputs_provider(self.build_inputs)
+        self.scaling_tab.pull_requested.connect(self._on_scaling_pull)
+        self.scaling_tab.push_requested.connect(self._on_scaling_push)
         self._refresh_cross_tab_state()
 
     # -- cross-tab state --------------------------------------------------------
@@ -257,6 +263,49 @@ class MainWindow(QMainWindow):
             "Solved parameters applied to Direct Computation."
         )
 
+    # -- cane & stack scaling bridge ----------------------------------------
+    def _on_scaling_pull(self) -> None:
+        """Read the solver tabs into the scaling tab (fiber -> cane)."""
+        try:
+            inputs = self.build_inputs()
+            opt = self.optimization_tab.to_inputs(inputs.nb_nested)
+            state = solver_inputs_to_scaling(
+                inputs, opt, self.scaling_tab.coupling()
+            )
+        except (TypeError, ValueError):  # invalid intermediate state
+            self.statusBar().showMessage(
+                "Cannot pull scaling: fix invalid solver-tab values."
+            )
+            return
+        self.scaling_tab.apply_pulled(state)
+        self.statusBar().showMessage("Solver state pulled into Cane & Stack.")
+
+    def _on_scaling_push(self) -> None:
+        """Apply the scaling handoff to the solver tabs (cane -> fiber)."""
+        try:
+            handoff = self.scaling_tab.build_handoff()
+        except (TypeError, ValueError):  # ScalingError subclasses ValueError
+            self.statusBar().showMessage(
+                "Cannot push scaling: incomplete or invalid cane/fiber."
+            )
+            return
+        j = self.jacket_tab
+        c = self.capillaries_tab
+        o = self.optimization_tab
+        j.D0Edit.setText(f"{handoff.D0 * 1e3:.10g}")
+        j.d0Edit.setText(f"{handoff.d0 * 1e3:.10g}")
+        c.ncapSpinBox.setValue(handoff.n_cap)
+        c.nestedSpinBox.setValue(len(handoff.D_c0))
+        for edit, dc in zip(c.dcEdits, handoff.D_c0, strict=False):
+            edit.setText(f"{dc * 1e3:.10g}")
+        for edit, dcc in zip(c.dccEdits, handoff.d_c0, strict=False):
+            edit.setText(f"{dcc * 1e3:.10g}")
+        o.tfEdit.setText(f"{handoff.tf * 1e6:.10g}")
+        o.Dcf1Edit.setText(f"{handoff.Dcf1 * 1e6:.10g}")
+        o.DcoreEdit.setText(f"{handoff.Dcore * 1e6:.10g}")
+        self._refresh_cross_tab_state()
+        self.statusBar().showMessage("Scaling pushed to the solver tabs.")
+
     # -- config I/O --------------------------------------------------------------------
     def _on_load_config(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -292,6 +341,7 @@ class MainWindow(QMainWindow):
             "direct_pcap": [e.text() for e in d.pcapEdits],
             "optim_pcap_min": [e.text() for e in o.pcapMinEdits],
             "optim_pcap_max": [e.text() for e in o.pcapMaxEdits],
+            "scaling": self.scaling_tab.collect_state(),
         }
 
     def _apply_ui_state(self, state: dict) -> None:
@@ -313,6 +363,9 @@ class MainWindow(QMainWindow):
             for i, text in enumerate(state.get(key, [])[: len(edits)]):
                 if isinstance(text, str):
                     edits[i].setText(text)
+        scaling_state = state.get("scaling")
+        if isinstance(scaling_state, dict):
+            self.scaling_tab.apply_state(scaling_state)
 
     def load_config(self, path: str | Path) -> None:
         inputs, opt = load_config_json(path)

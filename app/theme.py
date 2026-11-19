@@ -650,6 +650,36 @@ QLabel#ratio_badge_bad {{
     padding: 1px 8px;
     font-weight: bold;
 }}
+
+/* Stage tables (Cane & Stack tab) */
+QTableWidget {{
+    background-color: {surface_lowest};
+    alternate-background-color: {surface_low};
+    color: {text_primary};
+    gridline-color: {border_subtle};
+    border: 1px solid {border_subtle};
+    border-radius: 6px;
+    selection-background-color: {cyan_accent};
+    selection-color: {text_primary};
+}}
+QTableWidget::item {{
+    padding: 2px 6px;
+}}
+QHeaderView::section {{
+    background-color: {surface_low};
+    color: {text_muted};
+    border: none;
+    border-right: 1px solid {border_subtle};
+    border-bottom: 1px solid {border_color};
+    padding: 3px 8px;
+}}
+QHeaderView::section:hover {{
+    background-color: {surface_high};
+}}
+QTableCornerButton::section {{
+    background-color: {surface_low};
+    border: none;
+}}
 """
 
 

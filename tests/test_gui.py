@@ -1,4 +1,4 @@
-"""Headless offscreen Qt GUI tests for the 5-tab workstation (A1-A4).
+"""Headless offscreen Qt GUI tests for the 6-tab workstation (A1-A4, A8).
 
 Run with ``QT_QPA_PLATFORM=offscreen uv run pytest tests/test_gui.py``.
 """
@@ -26,6 +26,11 @@ from PySide6.QtWidgets import (
 
 from app.main import main
 from app.main_window import MainWindow
+from app.tabs.tab_scaling import (
+    MODE_BACKCALC,
+    SUBMODE_FIXED_JACKET,
+    ScalingTab,
+)
 from app.theme import (
     build_cyberpunk_qss,
     mono_font_family,
@@ -38,6 +43,7 @@ from app.widgets.plot_canvas import (
     TEMPERATURE_VIEW,
     TENSION_VIEW,
 )
+from app.widgets.validators import read_double
 from app.workers import OptimizationWorker, SimulationWorker
 from src.io_utils import read_results_table
 from src.models import (
@@ -52,6 +58,7 @@ from src.models import (
     mbar_to_pa,
     um_to_m,
 )
+from src.scaling import compute_forward_scaling, get_scaling_presets
 from src.solvers import run_direct_simulation, run_optimization
 
 
@@ -89,7 +96,7 @@ def test_all_tabs_instantiated(window: MainWindow) -> None:
     ]
     assert labels == [
         "Parameters", "Jacket", "Capillaries", "Direct computation",
-        "Optimization",
+        "Optimization", "Cane & Stack",
     ]
     assert window.windowTitle() == "HARF Drawing Simulation Workstation"
 
@@ -1284,3 +1291,93 @@ def test_matplotlib_monospace_stack_resolves_silently() -> None:
         logger.removeHandler(handler)
     assert not messages, f"findfont warnings: {messages}"
     assert FontProperties(fname=resolved).get_name() in families
+
+
+# ---------------------------------------------------------------------------
+# A8: cane & stack scaling tab
+# ---------------------------------------------------------------------------
+
+
+def test_scaling_tab_forward_matches_engine(window: MainWindow) -> None:
+    """Preset-0 forward run matches the engine stage-by-stage."""
+    preset = get_scaling_presets()[0]
+    res = compute_forward_scaling(preset.cane, preset.jacket, preset.factors)
+    s = window.scaling_tab
+    assert isinstance(s, ScalingTab)
+    assert s._result is not None
+    for name in ("E", "F", "G", "H", "I"):
+        assert s._result.stages[name].zeta == pytest.approx(
+            res.stages[name].zeta, rel=1e-9
+        )
+    zeta_row = next(
+        i for i, (_label, attr) in enumerate(ScalingTab.STAGE_ROWS)
+        if attr == "zeta"
+    )
+    assert float(s.stageTable.item(zeta_row, 1).text()) == pytest.approx(
+        res.stages["E"].zeta * 1e3, rel=1e-6
+    )
+    assert s.allOkBadge.is_ok is True
+    assert not s.caneCanvas.slider_row.isVisibleTo(s.caneCanvas)
+    assert not s.fiberCanvas.slider_row.isVisibleTo(s.fiberCanvas)
+
+
+def test_scaling_tab_back_calc_recovers_preset(qapp) -> None:
+    """Back-calc with a fixed jacket recovers the preset-0 cane."""
+    win = MainWindow()
+    s = win.scaling_tab
+    s.modeCombo.setCurrentText(MODE_BACKCALC)
+    s.subModeCombo.setCurrentText(SUBMODE_FIXED_JACKET)
+    assert read_double(s.odcEdit) == pytest.approx(3.8, rel=1e-6)
+    assert read_double(s.dcorecEdit) == pytest.approx(1.4, rel=1e-6)
+    assert read_double(s.dcEdits[0]) == pytest.approx(0.45, rel=1e-6)
+    assert read_double(s.tcEdits[0]) == pytest.approx(0.05, rel=1e-6)
+    assert read_double(s.sjEdit) == pytest.approx(40.0, rel=1e-6)
+    assert s._result is not None
+    assert s._result.feasibility.all_ok
+    win.close()
+
+
+def test_scaling_tab_push_pull_round_trip(window: MainWindow) -> None:
+    """Push writes the solver tabs; pull+push keeps D0/d0 stable."""
+    s = window.scaling_tab
+    j = window.jacket_tab
+    c = window.capillaries_tab
+    o = window.optimization_tab
+    s.pushButton.click()
+    handoff = s.build_handoff()
+    assert read_double(j.D0Edit) == pytest.approx(handoff.D0 * 1e3, rel=1e-9)
+    assert read_double(j.d0Edit) == pytest.approx(handoff.d0 * 1e3, rel=1e-9)
+    assert c.ncapSpinBox.value() == handoff.n_cap
+    assert c.nestedSpinBox.value() == len(handoff.D_c0)
+    for i, (dc, dcc) in enumerate(
+        zip(handoff.D_c0, handoff.d_c0, strict=True)
+    ):
+        assert read_double(c.dcEdits[i]) == pytest.approx(
+            dc * 1e3, rel=1e-9
+        )
+        assert read_double(c.dccEdits[i]) == pytest.approx(
+            dcc * 1e3, rel=1e-9
+        )
+    assert read_double(o.tfEdit) == pytest.approx(handoff.tf * 1e6, rel=1e-9)
+    assert read_double(o.Dcf1Edit) == pytest.approx(
+        handoff.Dcf1 * 1e6, rel=1e-9
+    )
+    assert read_double(o.DcoreEdit) == pytest.approx(
+        handoff.Dcore * 1e6, rel=1e-9
+    )
+    d0_before = read_double(j.d0Edit)
+    s.pullButton.click()
+    s.pushButton.click()
+    assert read_double(j.D0Edit) == pytest.approx(handoff.D0 * 1e3, rel=1e-6)
+    assert read_double(j.d0Edit) == pytest.approx(d0_before, rel=1e-6)
+
+
+def test_scaling_ui_state_round_trip(qapp, tmp_path) -> None:
+    """Scaling-tab edits survive a config save / reload cycle."""
+    cfg = tmp_path / "cfg.json"
+    win = MainWindow(config_path=cfg)
+    win.scaling_tab.sieEdit.setText("1.75")
+    win.close()
+    win2 = MainWindow(config_path=cfg)
+    assert win2.scaling_tab.sieEdit.text() == "1.75"
+    win2.close()

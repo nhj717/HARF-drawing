@@ -127,7 +127,9 @@ class CrossSectionCanvas(QWidget):
             f"color: {TEXT_MUTED}; font-family: '{mono_font_family()}';"
         )
 
-        slider_row = QHBoxLayout()
+        self.slider_row = QWidget()
+        slider_row = QHBoxLayout(self.slider_row)
+        slider_row.setContentsMargins(0, 0, 0, 0)
         slider_row.addWidget(QLabel("z position:"))
         slider_row.addWidget(self.zmSlider, stretch=1)
         slider_row.addWidget(self.z_label)
@@ -135,7 +137,7 @@ class CrossSectionCanvas(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas, stretch=1)
-        layout.addLayout(slider_row)
+        layout.addWidget(self.slider_row)
         self._draw_empty()
 
     # -- visibility / deferred raster ------------------------------------
@@ -168,11 +170,135 @@ class CrossSectionCanvas(QWidget):
         self.zmSlider.setEnabled(True)
         self.zmSlider.setValue(0)
         self._index = 0
+        self.slider_row.show()
         self._refresh()
 
     @property
     def current_index(self) -> int:
         return self._index
+
+    def set_static_geometry(
+        self,
+        title: str,
+        r_outer: float,
+        r_bore: float,
+        r_env: float,
+        r_core: float,
+        ring_outer: Sequence[float],
+        ring_bore: Sequence[float],
+        n_cap: int,
+        guide_radius: float | None = None,
+    ) -> None:
+        """Render a static (non-scrubbed) cross-section, radii in µm.
+
+        Used by the Cane & Stack tab for the pre-simulation cane (stage
+        E) and target fiber (stage I) schematics: the slider row is
+        hidden, ``guide_radius`` (default: core + ring-1 outer radius,
+        i.e. capillaries tangent to the core) is the ring-1 center
+        circle radius, and the render is memoized on the rounded
+        geometry tuple so unchanged re-renders cost nothing.
+        """
+
+        def rk(value: float) -> float | None:
+            v = float(value)
+            return round(v, 9) if math.isfinite(v) else None
+
+        key = (
+            "static", title, rk(r_outer), rk(r_bore), rk(r_env),
+            rk(r_core), tuple(rk(v) for v in ring_outer),
+            tuple(rk(v) for v in ring_bore), int(n_cap),
+            rk(guide_radius) if guide_radius is not None else None,
+        )
+        if key == self._last_state_key:
+            return
+        self._last_state_key = key
+
+        r_outer = float(r_outer)
+        r_bore = float(r_bore)
+        r_env = float(r_env)
+        r_core = float(r_core)
+        rings_o = [float(v) for v in ring_outer]
+        rings_i = [float(v) for v in ring_bore]
+        finite = (
+            math.isfinite(r_outer) and math.isfinite(r_bore)
+            and math.isfinite(r_env) and math.isfinite(r_core)
+            and all(math.isfinite(v) for v in rings_o + rings_i)
+        )
+        self.slider_row.hide()
+        self.zmSlider.setEnabled(False)
+        self.z_label.setText("z = -- mm")
+        if not finite or not r_outer > 0.0:
+            self._draw_invalid(title)
+            return
+
+        self.ax.clear()
+        self.ax.set_aspect("equal")
+        # Jacket annulus (or bare outline when the bore is degenerate).
+        if 0.0 < r_bore < r_outer:
+            self.ax.add_patch(
+                Wedge(
+                    (0.0, 0.0), r_outer, 0.0, 360.0,
+                    width=max(r_outer - r_bore, 1e-9),
+                    facecolor=CYAN_DARK, edgecolor=CYAN, lw=1.8,
+                )
+            )
+        else:
+            self.ax.add_patch(
+                Circle(
+                    (0.0, 0.0), r_outer, facecolor="none",
+                    edgecolor=CYAN, lw=1.8,
+                )
+            )
+        # Dashed consolidation-front envelope inside the bore.
+        if 0.0 < r_env < r_bore:
+            self.ax.add_patch(
+                Circle(
+                    (0.0, 0.0), r_env, facecolor="none",
+                    edgecolor=TEXT_MUTED, lw=1.0, linestyle="--",
+                )
+            )
+        # Central core rod / hole.
+        if r_core > 0.0:
+            self.ax.add_patch(
+                Circle(
+                    (0.0, 0.0), r_core, facecolor=SURFACE_LOWEST,
+                    edgecolor=CYAN_DARK, lw=0.8,
+                )
+            )
+
+        # Ring 1 centers: tangent to the core unless overridden.
+        guide = guide_radius
+        if guide is None:
+            guide = r_core + rings_o[0] if rings_o else r_core
+        if not math.isfinite(guide):
+            guide = r_core
+        host = guide + (rings_o[0] if rings_o else 0.0)
+        ring_centers = compute_capillary_centers(
+            host, rings_o, rings_i, int(n_cap),
+        )
+        self._draw_capillary_rings(rings_o, rings_i, ring_centers)
+
+        limit = max(r_outer, r_core) * 1.15
+        self.ax.set_xlim(-limit, limit)
+        self.ax.set_ylim(-limit, limit)
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_title(title)
+        self._style_axes()
+        self._finish_render()
+
+    def _draw_invalid(self, title: str) -> None:
+        """Non-finite / degenerate geometry fallback view."""
+        self.ax.clear()
+        self.ax.text(
+            0.5, 0.5, "invalid geometry", ha="center", va="center",
+            transform=self.ax.transAxes, fontsize=10, color=TEXT_MUTED,
+        )
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.set_title(title)
+        self._style_axes()
+        self._finish_render()
 
     # -- slots --------------------------------------------------------------
     def _on_slider(self, value: int) -> None:
@@ -205,6 +331,31 @@ class CrossSectionCanvas(QWidget):
         self.ax.title.set_color(TEXT_MUTED)
         for spine in self.ax.spines.values():
             spine.set_color("#3a494a")
+
+    def _draw_capillary_rings(
+        self,
+        rings_o: list[float],
+        rings_i: list[float],
+        ring_centers: list[list[tuple[float, float]]],
+    ) -> None:
+        """Neon capillary rings (one tube per azimuth per ring)."""
+        for i, centers_i in enumerate(ring_centers):
+            neon = RING_FACE_COLORS[i % len(RING_FACE_COLORS)]
+            rc_o = rings_o[i]
+            rc_i = rings_i[i]
+            for cx, cy in centers_i:
+                self.ax.add_patch(
+                    Circle(
+                        (cx, cy), rc_o, facecolor=neon,
+                        edgecolor=neon, lw=1.2, alpha=0.85,
+                    )
+                )
+                self.ax.add_patch(
+                    Circle(
+                        (cx, cy), rc_i, facecolor=SURFACE_LOWEST,
+                        edgecolor=neon, lw=0.9,
+                    )
+                )
 
     def _refresh(self) -> None:
         result = self._result
@@ -247,23 +398,7 @@ class CrossSectionCanvas(QWidget):
         # Nested rings: exactly one capillary per azimuth per ring
         # (MATLAB HARF_drawing.mlapp schematic geometry).
         ring_centers = compute_capillary_centers(r, rings_o, rings_i, n_cap)
-        for i, centers_i in enumerate(ring_centers):
-            neon = RING_FACE_COLORS[i % len(RING_FACE_COLORS)]
-            rc_o = rings_o[i]
-            rc_i = rings_i[i]
-            for cx, cy in centers_i:
-                self.ax.add_patch(
-                    Circle(
-                        (cx, cy), rc_o, facecolor=neon,
-                        edgecolor=neon, lw=1.2, alpha=0.85,
-                    )
-                )
-                self.ax.add_patch(
-                    Circle(
-                        (cx, cy), rc_i, facecolor=SURFACE_LOWEST,
-                        edgecolor=neon, lw=0.9,
-                    )
-                )
+        self._draw_capillary_rings(rings_o, rings_i, ring_centers)
 
         limit = max(R, r) * 1.15
         self.ax.set_xlim(-limit, limit)

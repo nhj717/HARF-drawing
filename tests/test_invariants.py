@@ -39,7 +39,7 @@ def test_package_imports() -> None:
     """The src package imports and exposes its public modules."""
     assert src.__doc__ is not None
     for mod in ("models", "expressions", "materials", "physics",
-                "solvers", "io_utils"):
+                "solvers", "io_utils", "scaling"):
         assert hasattr(src, mod)
 
 
@@ -246,3 +246,43 @@ def test_simulation_status_enum_complete():
         "DIVERGED",
         "CANCELLED",
     } <= names
+
+
+def test_scaling_presets_forward_invariants() -> None:
+    """The scaling presets satisfy the stage-chain invariants."""
+    from src.scaling import (
+        CO_FED_VACUUM,
+        compute_forward_scaling,
+        get_scaling_presets,
+    )
+
+    presets = get_scaling_presets()
+    assert len(presets) == 4
+    for preset in presets[:3]:
+        res = compute_forward_scaling(
+            preset.cane, preset.jacket, preset.factors
+        )
+        assert res.feasibility.all_ok
+        # zeta_F = zeta_E / S_c and zeta_G = S_ie * zeta_F.
+        assert res.stages["F"].zeta == pytest.approx(
+            res.stages["E"].zeta / res.S_c, rel=1e-12
+        )
+        assert res.stages["G"].zeta == pytest.approx(
+            preset.factors.S_ie * res.stages["F"].zeta, rel=1e-12
+        )
+        # Jacket silica area conservation (fed vacuum coupling).
+        if preset.factors.coupling is CO_FED_VACUUM:
+            rhs = (
+                preset.jacket.OD_j**2 - preset.jacket.ID_j**2
+                + preset.cane.OD_c**2 - res.stages["E"].zeta**2
+            )
+            for name in ("F", "G", "H"):
+                stage = res.stages[name]
+                assert preset.factors.S_j**2 * (
+                    stage.OD_j**2 - stage.zeta**2
+                ) == pytest.approx(rhs, rel=1e-12)
+    # The legacy Excel preset has a negative cane wall: NaN-tolerant.
+    legacy = presets[3]
+    res = compute_forward_scaling(legacy.cane, legacy.jacket, legacy.factors)
+    assert res.feasibility.cane_wall_positive is False
+    assert not res.feasibility.all_ok
