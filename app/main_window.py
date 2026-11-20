@@ -13,7 +13,7 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QUrl
+from PySide6.QtCore import QLocale, Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -83,6 +83,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.optimization_tab, "Optimization")
         self.tabs.addTab(self.scaling_tab, "Cane & Stack")
         self.setCentralWidget(self.tabs)
+        # Never elide ("...") the six tab titles when the window narrows:
+        # disable elision + tab expansion and allow scroll buttons instead.
+        bar = self.tabs.tabBar()
+        bar.setElideMode(Qt.TextElideMode.ElideNone)
+        bar.setUsesScrollButtons(True)
+        bar.setExpanding(False)
+        self.tabs.setElideMode(Qt.TextElideMode.ElideNone)
+        self.tabs.setUsesScrollButtons(True)
 
         self._direct_worker: SimulationWorker | None = None
         self._optimization_worker: OptimizationWorker | None = None

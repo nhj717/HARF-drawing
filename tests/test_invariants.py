@@ -39,7 +39,7 @@ def test_package_imports() -> None:
     """The src package imports and exposes its public modules."""
     assert src.__doc__ is not None
     for mod in ("models", "expressions", "materials", "physics",
-                "solvers", "io_utils", "scaling"):
+                "solvers", "io_utils", "scaling", "sem_metrology"):
         assert hasattr(src, mod)
 
 

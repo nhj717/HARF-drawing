@@ -25,6 +25,8 @@ from PySide6.QtCore import QLocale, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QDialog,
+    QFileDialog,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -39,6 +41,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.dialogs.sem_inspector import SemApplyPayload
 from app.theme import GREEN, RED, TEXT_MUTED
 from app.widgets.cross_section_canvas import CrossSectionCanvas
 from app.widgets.scroll import wrap_scroll
@@ -64,6 +67,7 @@ from src.scaling import (
     solve_inverse_cane,
     stack_to_cane,
 )
+from src.sem_metrology import extract_tiff_pixel_size, load_microscope_image
 
 __all__ = [
     "MODE_BACKCALC",
@@ -267,6 +271,18 @@ class ScalingTab(QWidget):
             for i, v in enumerate((0.0003, 0.0002, 0.0001))
         ]
 
+        # -- SEM import buttons ----------------------------------------------
+        self.importCaneSemButton = QPushButton("Import SEM / Image…")
+        self.importCaneSemButton.setToolTip(
+            "Load a cane cross-section micrograph, estimate its "
+            "geometry and apply it to this tab"
+        )
+        self.importFiberSemButton = QPushButton("Import SEM / Image…")
+        self.importFiberSemButton.setToolTip(
+            "Load a fiber cross-section micrograph, estimate its "
+            "geometry and apply it to this tab"
+        )
+
         # -- back-calc / stack widgets ---------------------------------------
         self.subModeCombo = QComboBox()
         self.subModeCombo.addItems((SUBMODE_FIXED_JACKET, SUBMODE_MANUAL_SJ))
@@ -350,6 +366,7 @@ class ScalingTab(QWidget):
         for i in range(MAX_NESTED_RINGS):
             cane_rows.append((f"d_c,{i + 1}", self.dcEdits[i]))
             cane_rows.append((f"t_c,{i + 1}", self.tcEdits[i]))
+        cane_rows.append(("SEM import", self.importCaneSemButton))
         factors_rows: list[tuple[str, QWidget]] = [
             ("S_j", self.sjEdit),
             ("S_ie", self.sieEdit),
@@ -363,6 +380,7 @@ class ScalingTab(QWidget):
         for i in range(MAX_NESTED_RINGS):
             fiber_rows.append((f"d_f,{i + 1}", self.dfEdits[i]))
             fiber_rows.append((f"t_f,{i + 1}", self.tfEdits[i]))
+        fiber_rows.append(("SEM import", self.importFiberSemButton))
 
         self.caneBox = _form_box("Cane (stage E)", cane_rows)
         self.jacketBox = _form_box(
@@ -458,6 +476,12 @@ class ScalingTab(QWidget):
         self.stackInverseButton.clicked.connect(self._on_stack_inverse)
         self.pullButton.clicked.connect(self.pull_requested.emit)
         self.pushButton.clicked.connect(self.push_requested.emit)
+        self.importCaneSemButton.clicked.connect(
+            lambda: self._on_import_sem("cane")
+        )
+        self.importFiberSemButton.clicked.connect(
+            lambda: self._on_import_sem("fiber")
+        )
 
         self._on_preset(0)
 
@@ -888,6 +912,71 @@ class ScalingTab(QWidget):
 
     def _show_error(self, exc: Exception) -> None:
         self._set_status(f"Scaling error: {exc}", False)
+
+    # -- SEM / microscope import ------------------------------------------------
+    def _on_import_sem(self, stage: str) -> None:
+        """Load a micrograph, inspect it, then apply the measurements."""
+        path, _sel = QFileDialog.getOpenFileName(
+            self,
+            f"Import {stage} cross-section image",
+            "",
+            "Images (*.tif *.tiff *.png *.jpg *.jpeg *.bmp);;"
+            "All files (*)",
+        )
+        if not path:
+            return
+        try:
+            image = load_microscope_image(path)
+            calibration = extract_tiff_pixel_size(path)
+        except Exception as exc:  # noqa: BLE001 - user-facing error
+            self._show_error(exc)
+            return
+        from app.dialogs.sem_inspector import SemInspectorDialog
+
+        dlg = SemInspectorDialog(
+            image=image, calibration=calibration, stage=stage, parent=self
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.apply_sem_payload(dlg.payload())
+
+    def apply_sem_payload(self, payload: SemApplyPayload) -> None:
+        """Write a :class:`SemApplyPayload` into the matching edits."""
+        sc = self._lscale()
+        if payload.stage == "fiber":
+            od_edit = self.dfEdit
+            core_edit = self.dcorefEdit
+            d_edits, t_edits = self.dfEdits, self.tfEdits
+        else:
+            od_edit = self.odcEdit
+            core_edit = self.dcorecEdit
+            d_edits, t_edits = self.dcEdits, self.tcEdits
+        nested = max(
+            len(payload.ring_bore), len(payload.ring_wall), payload.nested
+        )
+        with self._guard():
+            if payload.od is not None:
+                od_edit.setText(f"{payload.od / sc:.10g}")
+            if payload.d_core is not None:
+                core_edit.setText(f"{payload.d_core / sc:.10g}")
+            if payload.n_cap is not None:
+                self.ncapSpinBox.setValue(int(payload.n_cap))
+            for i, d in enumerate(payload.ring_bore):
+                d_edits[i].setText(f"{d / sc:.10g}")
+            for i, t in enumerate(payload.ring_wall):
+                t_edits[i].setText(f"{t / sc:.10g}")
+            if nested >= 1:
+                self.nestedSpinBox.setValue(
+                    min(nested, MAX_NESTED_RINGS)
+                )
+        self._refresh_titles()
+        self._apply_gating(self.nestedSpinBox.value())
+        self._recompute()
+        self._set_status(
+            f"Applied SEM {payload.stage} estimate "
+            f"({nested} ring(s) touched).",
+            True,
+        )
 
     # -- solver bridge ---------------------------------------------------------
     def build_handoff(self) -> SolverHandoff:

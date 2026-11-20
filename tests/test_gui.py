@@ -6,6 +6,7 @@ Run with ``QT_QPA_PLATFORM=offscreen uv run pytest tests/test_gui.py``.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from scipy.special import erf
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,10 +22,12 @@ from PySide6.QtCore import QLocale, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QScrollArea,
     QSplitter,
 )
 
+from app.dialogs.sem_inspector import SemApplyPayload, SemInspectorDialog
 from app.main import main
 from app.main_window import MainWindow
 from app.tabs.tab_scaling import (
@@ -59,6 +63,7 @@ from src.models import (
     um_to_m,
 )
 from src.scaling import compute_forward_scaling, get_scaling_presets
+from src.sem_metrology import ScaleCalibration
 from src.solvers import run_direct_simulation, run_optimization
 
 
@@ -1381,3 +1386,153 @@ def test_scaling_ui_state_round_trip(qapp, tmp_path) -> None:
     win2 = MainWindow(config_path=cfg)
     assert win2.scaling_tab.sieEdit.text() == "1.75"
     win2.close()
+
+
+# ---------------------------------------------------------------------------
+# A9: un-elided tab bar & SEM / microscope cross-section import
+# ---------------------------------------------------------------------------
+
+
+def test_tab_bar_never_elides(qapp, window) -> None:
+    """All six tab labels stay fully visible, even at narrow widths."""
+    tabs = window.tabs
+    bar = tabs.tabBar()
+    assert tabs.elideMode() == Qt.TextElideMode.ElideNone
+    assert bar.elideMode() == Qt.TextElideMode.ElideNone
+    assert not bar.expanding()
+    fm = bar.fontMetrics()
+    window.show()
+    for width in (1280, 900, 760):
+        window.resize(width, 800)
+        qapp.processEvents()
+        for j in range(tabs.count()):
+            text = tabs.tabText(j)
+            assert "…" not in text
+            assert bar.tabRect(j).width() >= fm.horizontalAdvance(text)
+
+
+def test_scaling_tab_sem_import_buttons(qapp, monkeypatch) -> None:
+    """SEM import buttons open a file dialog; cancel leaves state alone."""
+    win = MainWindow()
+    s = win.scaling_tab
+    before = s.odcEdit.text()
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        staticmethod(lambda *a, **k: ("", "")),
+    )
+    s.importCaneSemButton.click()
+    s.importFiberSemButton.click()
+    assert not s.statusLabel.text().startswith("Scaling error")
+    assert s.odcEdit.text() == before
+    win.close()
+
+
+_SEM_N = 1024
+_SEM_CENTER = 512.0
+_SEM_BANNER_START = 905
+_SEM_EDGE_SIGMA = 0.6
+
+
+def _sem_inside(r: np.ndarray, r0: float) -> np.ndarray:
+    """Smooth (erf) indicator of ``r < r0``."""
+    s = _SEM_EDGE_SIGMA * math.sqrt(2.0)
+    return 0.5 * (1.0 - erf((r - r0) / s))
+
+
+def _sem_two_ring_image() -> np.ndarray:
+    """Synthetic bright-silica 2-ring cane micrograph with banner."""
+    rings = ((215.0, 85.0, 105.0), (245.0, 45.0, 55.0))
+    n_cap, r_zeta, od = 6, 320.0, 365.0
+    xx, yy = np.meshgrid(
+        np.arange(_SEM_N, dtype=float), np.arange(_SEM_N, dtype=float)
+    )
+    r = np.hypot(xx - _SEM_CENTER, yy - _SEM_CENTER)
+    comps = [_sem_inside(r, od) - _sem_inside(r, r_zeta)]
+    rho1, _rc1, rcap1 = rings[0]
+    comps.append(_sem_inside(r, rho1 - rcap1))
+    for k in range(n_cap):
+        th = k * 2.0 * math.pi / n_cap
+        for rho, rc, rcap in rings:
+            d = np.hypot(
+                xx - (_SEM_CENTER + rho * math.cos(th)),
+                yy - (_SEM_CENTER + rho * math.sin(th)),
+            )
+            comps.append(_sem_inside(d, rcap) - _sem_inside(d, rc))
+    silica = np.ones((_SEM_N, _SEM_N))
+    for comp in comps:
+        silica *= 1.0 - comp
+    silica = 1.0 - silica
+    rng = np.random.default_rng(42)
+    img = np.clip(silica + rng.normal(0.0, 0.04, (_SEM_N, _SEM_N)), 0.0, 1.0)
+    img[_SEM_BANNER_START:, :] = np.clip(
+        0.90 + rng.normal(0.0, 0.04, (_SEM_N - _SEM_BANNER_START, _SEM_N)),
+        0.0,
+        1.0,
+    )
+    return img
+
+
+def test_sem_inspector_wall_only_payload(qapp) -> None:
+    """Wall-only apply exports just the ring thicknesses in SI metres."""
+    dlg = SemInspectorDialog(
+        image=_sem_two_ring_image(),
+        calibration=ScaleCalibration(2e-6),
+        stage="cane",
+    )
+    dlg.nestedSpin.setValue(2)
+    dlg.redetectButton.click()
+    dlg.wallOnlyButton.click()
+    p = dlg.payload()
+    assert p.stage == "cane"
+    assert p.od is None
+    assert p.d_core is None
+    assert p.n_cap is None
+    assert p.ring_bore == ()
+    assert len(p.ring_wall) == 2
+    assert p.ring_wall[0] == pytest.approx(40e-6, abs=4e-6)
+    assert p.ring_wall[1] == pytest.approx(20e-6, abs=3e-6)
+    assert p.nested == 2
+    dlg.close()
+
+
+def test_scaling_tab_apply_sem_payload_selective(qapp) -> None:
+    """A wall-only payload touches only the matching thickness edits."""
+    win = MainWindow()
+    s = win.scaling_tab
+    s.unitCombo.setCurrentText("mm")
+    s.odcEdit.setText("3.8")
+    s.dcorecEdit.setText("1.4")
+    for i, (d, t) in enumerate(
+        ((0.085, 0.005), (0.22, 0.006), (0.16, 0.007))
+    ):
+        s.dcEdits[i].setText(f"{d}")
+        s.tcEdits[i].setText(f"{t}")
+    s.apply_sem_payload(
+        SemApplyPayload(stage="cane", ring_wall=(40e-6, 20e-6), nested=2)
+    )
+    assert read_double(s.tcEdits[0]) == pytest.approx(0.04, rel=1e-6)
+    assert read_double(s.tcEdits[1]) == pytest.approx(0.02, rel=1e-6)
+    assert read_double(s.tcEdits[2]) == pytest.approx(0.007, rel=1e-9)
+    assert read_double(s.odcEdit) == pytest.approx(3.8, rel=1e-9)
+    assert read_double(s.dcorecEdit) == pytest.approx(1.4, rel=1e-9)
+    assert read_double(s.dcEdits[0]) == pytest.approx(0.085, rel=1e-9)
+    assert read_double(s.dcEdits[1]) == pytest.approx(0.22, rel=1e-9)
+
+    s.unitCombo.setCurrentText("µm")
+    s.dfEdit.setText("125")
+    s.dcorefEdit.setText("35")
+    for edit, value in zip(s.dfEdits, ("0.3", "0.2", "0.15"), strict=True):
+        edit.setText(value)
+    for edit, value in zip(s.tfEdits, ("0.3", "0.2", "0.15"), strict=True):
+        edit.setText(value)
+    s.apply_sem_payload(
+        SemApplyPayload(
+            stage="fiber", od=124.8e-6, ring_wall=(4e-6, 2e-6), nested=2
+        )
+    )
+    assert read_double(s.tfEdits[0]) == pytest.approx(4.0, rel=1e-6)
+    assert read_double(s.tfEdits[1]) == pytest.approx(2.0, rel=1e-6)
+    assert read_double(s.tfEdits[2]) == pytest.approx(0.15, rel=1e-9)
+    assert read_double(s.dfEdit) == pytest.approx(124.8, rel=1e-6)
+    win.close()

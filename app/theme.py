@@ -308,7 +308,7 @@ QTabBar::tab {{
     border-bottom: none;
     border-top-left-radius: 4px;
     border-top-right-radius: 4px;
-    padding: 7px 18px;
+    padding: 7px 16px;
     margin-right: 2px;
     font-weight: 600;
     font-size: 11px;
@@ -318,7 +318,7 @@ QTabBar::tab:selected {{
     color: {cyan_accent};
     border-top: 2px solid {cyan_accent};
     border-bottom: 1px solid {surface};
-    font-weight: 700;
+    font-weight: 600;
 }}
 QTabBar::tab:hover:!selected {{
     background-color: {surface_low};

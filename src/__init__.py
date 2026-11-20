@@ -7,6 +7,7 @@ Modules
 ``src.materials``   clamped material/furnace evaluators.
 ``src.physics``     jacket & capillary ODEs, events, dense sampling.
 ``src.scaling``     cane/stack -> fiber scaling stages & presets.
+``src.sem_metrology`` SEM / microscope cross-section metrology.
 ``src.solvers``     tension / pressure root-finds, optimization.
 ``src.io_utils``   CSV/TXT export and JSON config persistence.
 
@@ -82,6 +83,23 @@ from src.scaling import (
     solver_inputs_to_scaling,
     stack_to_cane,
 )
+from src.sem_metrology import (
+    CrossSectionEstimate,
+    MeasuredCircle,
+    Polarity,
+    ScaleCalibration,
+    WallProfile,
+    calibrate_from_scale_bar,
+    detect_sem_banner_row,
+    estimate_cross_section,
+    extract_tiff_pixel_size,
+    fit_circle_3pt,
+    fit_circle_robust,
+    fit_circle_taubin,
+    load_microscope_image,
+    measure_wall_profile_subpixel,
+    normalize_sem_image,
+)
 from src.solvers import (
     DeltaPSolution,
     TensionSolution,
@@ -103,6 +121,7 @@ __all__ = [
     "CompiledExpression",
     "ComputationCancelled",
     "CouplingMode",
+    "CrossSectionEstimate",
     "DeltaPSolution",
     "DerivedTargets",
     "ExpressionError",
@@ -114,10 +133,13 @@ __all__ = [
     "JacketModel",
     "MaterialProperty",
     "MaterialSet",
+    "MeasuredCircle",
     "OptimizationInputs",
     "OptimizationResult",
+    "Polarity",
     "PulledScalingState",
     "RingSpec",
+    "ScaleCalibration",
     "ScalingError",
     "ScalingFactors",
     "ScalingFeasibility",
@@ -131,18 +153,29 @@ __all__ = [
     "StageGeometry",
     "TargetError",
     "TensionSolution",
+    "WallProfile",
     "assemble_simulation_result",
     "auto_fit_scaling_factors",
+    "calibrate_from_scale_bar",
     "cane_to_stack",
     "compute_derived_targets",
     "compute_forward_scaling",
     "default_optimization_inputs",
     "default_simulation_inputs",
     "default_user_config_path",
+    "detect_sem_banner_row",
+    "estimate_cross_section",
     "export_results_table",
+    "extract_tiff_pixel_size",
+    "fit_circle_3pt",
+    "fit_circle_robust",
+    "fit_circle_taubin",
     "get_scaling_presets",
     "inverse_jacket_od",
     "load_config_json",
+    "load_microscope_image",
+    "measure_wall_profile_subpixel",
+    "normalize_sem_image",
     "read_results_table",
     "rhs_unreduced",
     "run_direct_simulation",

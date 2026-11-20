@@ -18,11 +18,12 @@
 |               | `physics.py` (4-state Jacket + 1-state/ring Capillary ODEs),
 |               | `solvers.py` (`brentq` + parallel scan + TRF optimizer),
 |               | `scaling.py` (1–3 ring cane/stack forward & inverse scaling),
+|               | `sem_metrology.py` (TIFF scale parser, Taubin/sub-pixel SEM metrology),
 |               | `io_utils.py` (`.csv`/`.txt` export, `.json` config).          |
 | `app/`        | Cyberpunk neon `PySide6` + `Matplotlib` 6-tab GUI (`theme.py`,
-|               | `main.py`, `main_window.py`, `workers.py`, `tabs/`, `widgets/`). |
-| `tests/`      | Unit, invariant, scaling, safety, I/O & offscreen Qt GUI tests |
-|               | (`test_{invariants,expressions,physics,optimization,scaling,safety,io,gui}.py`). |
+|               | `main.py`, `main_window.py`, `workers.py`, `tabs/`, `widgets/`, `dialogs/`). |
+| `tests/`      | Unit, invariant, scaling, SEM, safety, I/O & offscreen Qt GUI tests |
+|               | (`test_{invariants,expressions,physics,optimization,scaling,sem_metrology,safety,io,gui}.py`). |
 | `doc/`        | Documentation & scaling guides (`Fibre_HARF.png`,
 |               | `cane_scaling_guidelines.md`, `cane_scaling_regimes.png`).            |
 | `.idea/`      | PyCharm project config (preserved).                                    |
@@ -65,3 +66,4 @@
 - 2026-11-17: Completed & verified Milestone 1 (`src/` decoupled 4-state + 1-state/ring ODE solver, `273.15` K & `viscosity_3` fixes, `brentq` + TRF optimizer, crash-proof safety net, `.csv`/`.txt`/`.json` I/O — 99/99 tests passed) and Milestone 2 (`app/` 5-tab PySide6 + Matplotlib desktop workstation, `QThread` cancelable workers, 12 plot views + `zmSlider` 2D cross-section schematic — 30/30 offscreen GUI tests passed).
 - 2026-11-19: Verified GUI & geometry polish (`Vf` & velocity views standardized to `m/min`, `<1 ms` tab-switch memoization + deferred canvas draws, outer-tangent 1-per-capillary NANF schematic, compact `Solved parameters`-style Direct Computation output table, Optimization `Rcf1/Rcontact` `rf` fix + `max(Rc1/Rcontact)` badge, and resolved CoreText/Qt font families eliminating `Monospace` warnings — 122/122 tests & ruff passed).
 - 2026-11-19: Added bidirectional 1–3 ring `Cane & Stack` scaling engine (`src/scaling.py`), dedicated 6th GUI tab (`app/tabs/tab_scaling.py`) with dual cross-section previews, `Co-Fed Vacuum` + `Legacy Excel` (`6Ring_Scaling.xlsx`) couplings, Stage-1 stack $\leftrightarrow$ cane sizing, literature presets (`SR-ARF`, `NANF`, `DNANF`), solver-tab `Pull`/`Push` sync, and `doc/cane_scaling_guidelines.md` + `doc/cane_scaling_regimes.png` (177/177 tests & ruff passed, `0.40 ms` mean tab switch).
+- 2026-11-20: Fixed 6-tab ribbon elision (`Qt.TextElideMode.ElideNone` + uniform `font-weight: 600` so `"Cane & Stack"` renders with `+31 px` slack) and added pure-Python SEM/microscope cross-section metrology (`src/sem_metrology.py` + `app/dialogs/sem_inspector.py` wired to `"Import SEM / Image…"` on `Cane` & `Desired Fiber` with Zeiss/FEI/ImageJ TIFF scale parsing, 2-click scale bar, LMedS/Taubin multi-ring auto-fit, sub-pixel 1D wall caliper, and selective field apply — 213/213 tests & ruff passed).
